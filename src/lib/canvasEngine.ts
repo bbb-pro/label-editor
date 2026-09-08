@@ -34,6 +34,11 @@ interface CustomFields {
    * 用它做缩放换算基准，可保证调整字号时条码条尺寸恒定。
    */
   _barcodeUnit?: { w: number; barH: number }
+  /**
+   * 人读文字在画布上的「绝对视觉缩放」（已含 group scale 的效果）。
+   * 拉伸条码时保持它恒定 → 文字不随拉伸变化；只有改「可读文字字号」时才变。
+   */
+  _barcodeTextScale?: number
   originalText?: string
   /** 形状子类型（kind === 'shape' 时生效） */
   _shapeType?: ShapeType
@@ -1276,6 +1281,7 @@ export class CanvasController {
     c._barcodeType = type
     c._barcodeSettings = settings
     c._barcodeUnit = { w: built.w, barH: built.barH }
+    c._barcodeTextScale = k
     group.set({ left: this.paperCenter().x - (w * k) / 2, top: this.paperCenter().y - (h * k) / 2 })
     this.finalizeObject(group, 'barcode', raw)
   }
@@ -1357,23 +1363,50 @@ export class CanvasController {
   }
 
   /**
-   * 抵消缩放对条码「人读文字」的影响，使拉伸条码时只拉条码条、文字不变形。
-   * 原理：group 的 scale 会叠加到子对象上，给文字设 1/scale 即可让其在屏幕上保持原始比例。
-   * 但**等比**缩放时文字本就应该随之变大，因此只抵消「非等比」的那部分：
-   * 取等比分量 u = min(sx, sy)，令文字视觉缩放恒为 u（等比时 u=sx=sy → 正常跟随放大）。
+   * 让条码「人读文字」完全不随拉伸变化 —— 文字大小只由「可读文字字号」决定。
+   *
+   * 原理：group 的 scale 会叠加到子对象上，给文字设 T/sx、T/sy 后，
+   * 文字在画布上的最终视觉缩放恒为 T（与 group scale 无关）。
+   * T 记录在 _barcodeTextScale：新建时 = 初始 group scale；之后无论怎么拉伸都保持恒定；
+   * 只有调整字号时重建条码，文字的「未缩放字号」变化而 T 不变 → 仅字号生效。
    */
-  private applyBarcodeTextCompensation(obj: fabric.Object) {
+  private applyBarcodeTextCompensation(obj: fabric.Object, base?: number) {
     const sx = obj.scaleX ?? 1
     const sy = obj.scaleY ?? 1
     if (!sx || !sy) return
-    const uniform = Math.min(Math.abs(sx), Math.abs(sy))
     const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
     if (!Array.isArray(kids)) return
+    const c = cf(obj)
+    const stored = c._barcodeTextScale
+    let t: number
+    if (typeof base === 'number' && base > 0) t = base
+    else if (typeof stored === 'number' && stored > 0) t = stored
+    else {
+      const fb = this.barcodeTextBaseScale(obj)
+      if (!(fb > 0)) return
+      t = fb
+    }
+    c._barcodeTextScale = t
     for (const k of kids) {
       // 只处理人读文字（条码条是 rect，保持随拉伸变化）
       if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
-      k.set({ scaleX: uniform / sx, scaleY: uniform / sy })
+      k.set({ scaleX: t / sx, scaleY: t / sy })
     }
+  }
+
+  /**
+   * 读取条码人读文字「当前」的绝对视觉缩放（= 子对象 scale × group scale）。
+   * 用于 _barcodeTextScale 缺失时（旧模板）的兜底，保证行为连续、不跳变。
+   */
+  private barcodeTextBaseScale(obj: fabric.Object): number {
+    const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
+    if (Array.isArray(kids)) {
+      for (const k of kids) {
+        if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
+        return (k.scaleX ?? 1) * (obj.scaleX ?? 1)
+      }
+    }
+    return Math.min(Math.abs(obj.scaleX ?? 1), Math.abs(obj.scaleY ?? 1))
   }
 
   private replaceBarcodeObject(old: fabric.Object, type: BarcodeType, text: string, settings: BarcodeRenderSettings) {
@@ -1423,8 +1456,8 @@ export class CanvasController {
       top: old.top,
       angle: old.angle ?? 0,
     })
-    // 重建后重新抵消非等比部分，保证人读文字不变形
-    this.applyBarcodeTextCompensation(group)
+    // 重建后沿用原有的文字绝对缩放：拉伸/改码制都不改变文字大小，只有字号会改变
+    this.applyBarcodeTextCompensation(group, this.barcodeTextBaseScale(old))
     const nc = cf(group)
     nc.id = oc.id
     nc.kind = oc.kind
@@ -1698,6 +1731,7 @@ export class CanvasController {
         props._barcodeTargetMm = c._barcodeTargetMm
         props._barcodeSettings = c._barcodeSettings
         if (c._barcodeUnit) props._barcodeUnit = c._barcodeUnit
+        if (typeof c._barcodeTextScale === 'number') props._barcodeTextScale = c._barcodeTextScale
         // 矢量条码组：模块矩形不写入 JSON（几百个对象太臃肿），载入时按元数据重建
         if (obj.type === 'group') delete (props as { objects?: unknown }).objects
       }
@@ -1837,6 +1871,7 @@ export class CanvasController {
       c._barcodeTargetMm = (s._barcodeTargetMm as number) ?? undefined
       c._barcodeSettings = (s._barcodeSettings as BarcodeRenderSettings) ?? undefined
       c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number } | undefined) ?? undefined
+      c._barcodeTextScale = (s._barcodeTextScale as number | undefined) ?? undefined
     }
     if (c.kind === 'text' && typeof s.originalText === 'string') {
       c.originalText = s.originalText

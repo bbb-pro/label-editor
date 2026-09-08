@@ -984,6 +984,17 @@ export default function App() {
             >
               <Maximize2 className="h-4 w-4" />
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHand(false)
+                zoomTo100()
+              }}
+              title="缩放到 100%（实际大小）"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-xs font-semibold tabular-nums text-muted-foreground hover:bg-accent"
+            >
+              1:1
+            </button>
           </div>
 
           {/* 移动端浮层：手动打开属性抽屉 */}
