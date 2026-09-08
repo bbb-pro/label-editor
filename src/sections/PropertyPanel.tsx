@@ -1,6 +1,6 @@
 // 右侧属性面板：纸张 / 选中对象几何 / 内容 / 文本格式
 import type { ReactNode } from 'react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -225,31 +225,11 @@ function TextFormatSection({
           </Select>
           {/* 字号(pt)：自由输入 + 预设（数字框自带上下微调箭头，省去独立步进按钮） */}
           <div className="flex h-8 items-center gap-1">
-            <div className="flex h-8 min-w-0 flex-1 items-center rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring/40">
-              <input
-                type="number"
-                min={0.5}
-                max={500}
-                step={0.5}
-                defaultValue={fmt.fontSizePt}
-                key={`fs:${keySeed}:${fmt.fontSizePt}`}
-                onBlur={(e) => {
-                  const v = clampFontSize(parseFloat(e.target.value))
-                  e.target.value = String(v)
-                  onChange({ fontSizePt: v })
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    const v = clampFontSize(parseFloat((e.target as HTMLInputElement).value))
-                    ;(e.target as HTMLInputElement).value = String(v)
-                    onChange({ fontSizePt: v })
-                    ;(e.target as HTMLInputElement).blur()
-                  }
-                }}
-                className="h-8 w-full min-w-0 bg-transparent px-2 text-center text-sm font-medium tabular-nums focus:outline-none"
-              />
-              <span className="pr-2 text-[11px] text-muted-foreground">pt</span>
-            </div>
+            <FontSizeField
+              value={fmt.fontSizePt}
+              resetKey={keySeed}
+              onCommit={(v) => onChange({ fontSizePt: v })}
+            />
             <FontPresetSelect
               current={fmt.fontSizePt}
               onPick={(v) => onChange({ fontSizePt: v })}
@@ -774,6 +754,77 @@ function VariableHint({
 function clampFontSize(v: number): number {
   if (!Number.isFinite(v)) return 12
   return Math.min(500, Math.max(0.5, Math.round(v * 100) / 100))
+}
+
+/**
+ * 字号(pt) 数字输入框。
+ * 旧实现用 `defaultValue` + 含当前值的 `key`，且只在 blur/回车时提交，有两个问题：
+ * 1. 点数字框自带的上下微调箭头只触发 input 事件、不会失焦 → 永远不生效；
+ *    输入后直接看画布（不失焦）同样不生效，表现为「输入数字调大小失效」。
+ * 2. 每次提交后 `key` 变化会让 input 重新挂载 → 输入焦点/光标丢失。
+ * 现改为「受控草稿值 + 实时提交」：打字或点箭头即时生效，
+ * 失焦/回车时才把输入框内容规范化（clamp），外部值变化（切换对象/点预设）时同步。
+ */
+function FontSizeField({
+  value,
+  resetKey,
+  onCommit,
+}: {
+  value: number
+  resetKey: string
+  onCommit: (pt: number) => void
+}) {
+  const [draft, setDraft] = useState(() => String(value))
+  const focused = useRef(false)
+
+  // 外部值变化且当前未聚焦时同步显示（切换选中对象、点预设下拉等）
+  useEffect(() => {
+    if (!focused.current) setDraft(String(value))
+    // resetKey 用于「切到另一个对象但字号恰好相同」时也要重置草稿
+  }, [value, resetKey])
+
+  const commit = (raw: string, normalize: boolean) => {
+    const n = parseFloat(raw)
+    if (!Number.isFinite(n)) {
+      if (normalize) setDraft(String(value))
+      return
+    }
+    const v = clampFontSize(n)
+    // 实时输入时保留用户输入的字面值（不被 clamp 打断），仅在失焦/回车时规范化
+    if (normalize) setDraft(String(v))
+    if (v !== value) onCommit(v)
+  }
+
+  return (
+    <div className="flex h-8 min-w-0 flex-1 items-center rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring/40">
+      <input
+        type="number"
+        min={0.5}
+        max={500}
+        step={0.5}
+        value={draft}
+        onFocus={() => {
+          focused.current = true
+        }}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          commit(e.target.value, false)
+        }}
+        onBlur={(e) => {
+          focused.current = false
+          commit(e.target.value, true)
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit((e.target as HTMLInputElement).value, true)
+            ;(e.target as HTMLInputElement).blur()
+          }
+        }}
+        className="h-8 w-full min-w-0 bg-transparent px-2 text-center text-sm font-medium tabular-nums focus:outline-none"
+      />
+      <span className="pr-2 text-[11px] text-muted-foreground">pt</span>
+    </div>
+  )
 }
 
 /** 字号预设下拉（最常用 + 自由值） */
