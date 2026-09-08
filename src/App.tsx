@@ -326,7 +326,7 @@ export default function App() {
     let lastDist = 0
     let dragging = false
 
-    const dist = () => {
+    const pinchDist = () => {
       const p = Array.from(pts.values())
       if (p.length < 2) return 0
       return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)
@@ -335,7 +335,7 @@ export default function App() {
       el.setPointerCapture(e.pointerId)
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY })
       dragging = true
-      if (pts.size === 2) lastDist = dist()
+      if (pts.size === 2) lastDist = pinchDist()
     }
     const onMove = (e: PointerEvent) => {
       if (!pts.has(e.pointerId)) return
@@ -346,10 +346,22 @@ export default function App() {
       if (pts.size === 1) {
         if (dragging) setPanView(panRef.current.x + dx, panRef.current.y + dy)
       } else if (pts.size >= 2) {
-        const d = dist()
+        const d = pinchDist()
         if (lastDist > 0) {
-          const factor = d / lastDist
-          applyZoom(zoomRef.current * factor)
+          // 以「双指中点」为锚点缩放：中点在缩放前后屏幕位置保持不变，
+          // 而非像 applyZoom 那样固定 pan（锚定左上角，导致画面漂移）。公式与滚轮缩放同源。
+          const z = zoomRef.current
+          const zz = Math.min(6, Math.max(0.2, z * (d / lastDist)))
+          if (zz !== z) {
+            const pv = Array.from(pts.values())
+            const rect = el.getBoundingClientRect()
+            const mx = (pv[0].x + pv[1].x) / 2 - rect.left
+            const my = (pv[0].y + pv[1].y) / 2 - rect.top
+            const pan = panRef.current
+            const nx = mx - (mx - pan.x) * (zz / z)
+            const ny = my - (my - pan.y) * (zz / z)
+            setView(zz, nx, ny)
+          }
         }
         lastDist = d
       }
@@ -371,7 +383,7 @@ export default function App() {
       el.removeEventListener('pointerup', onUp)
       el.removeEventListener('pointercancel', onUp)
     }
-  }, [hand, applyZoom, setPanView])
+  }, [hand, setPanView, setView])
 
   // ── 按住滚轮（中键）拖动画布平移（与 hand 工具、滚轮缩放互不冲突）──
   useEffect(() => {
