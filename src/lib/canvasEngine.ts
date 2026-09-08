@@ -28,6 +28,12 @@ interface CustomFields {
   _barcodeType?: BarcodeType
   _barcodeTargetMm?: number
   _barcodeSettings?: BarcodeRenderSettings
+  /**
+   * 上次构建条码时「未缩放」的条码条区几何（px）。
+   * 人读文字字号变化只会改变 fullHeight（文字带），条区 barH 不变；
+   * 用它做缩放换算基准，可保证调整字号时条码条尺寸恒定。
+   */
+  _barcodeUnit?: { w: number; barH: number }
   originalText?: string
   /** 形状子类型（kind === 'shape' 时生效） */
   _shapeType?: ShapeType
@@ -1269,6 +1275,7 @@ export class CanvasController {
     c._barcodeTargetMm = targetMm
     c._barcodeType = type
     c._barcodeSettings = settings
+    c._barcodeUnit = { w: built.w, barH: built.barH }
     group.set({ left: this.paperCenter().x - (w * k) / 2, top: this.paperCenter().y - (h * k) / 2 })
     this.finalizeObject(group, 'barcode', raw)
   }
@@ -1278,7 +1285,7 @@ export class CanvasController {
     type: BarcodeType,
     text: string,
     settings: BarcodeRenderSettings,
-  ): { group: fabric.Group; w: number; h: number } | null {
+  ): { group: fabric.Group; w: number; h: number; barH: number } | null {
     try {
       const vec = renderBarcodeVectorRects(type, text, settings)
       if (!vec.rects.length) return null
@@ -1316,7 +1323,7 @@ export class CanvasController {
         )
       }
       const group = new fabric.Group(children, { subTargetCheck: false })
-      return { group, w: vec.width, h }
+      return { group, w: vec.width, h, barH: vec.height }
     } catch {
       return null
     }
@@ -1326,6 +1333,27 @@ export class CanvasController {
    * 用新几何替换画布上的条码对象（保持 id/名称/元数据/选中态/位置角度）。
    * fabric Group 不支持原位整体换children，直接换对象最稳。
    */
+  /**
+   * 从条码组内的「模块矩形」反推未缩放的条码条区高度（不含人读文字带）。
+   * 用于 _barcodeUnit 缺失时（旧模板）的兜底。注意 Group 子对象坐标是相对组中心的
+   * 局部坐标，未乘组的 scaleY，正好是我们需要的单位几何。
+   */
+  private barcodeBarUnitHeight(obj: fabric.Object): number {
+    const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
+    if (!Array.isArray(kids)) return 0
+    let top = Infinity
+    let bottom = -Infinity
+    for (const k of kids) {
+      // 跳过人读文字（它的 scale 已被 applyBarcodeTextCompensation 改写）
+      if (k.type === 'text' || k.type === 'textbox' || k.type === 'i-text') continue
+      const y0 = k.top ?? 0
+      const h0 = (k.height ?? 0) * (k.scaleY ?? 1)
+      top = Math.min(top, y0)
+      bottom = Math.max(bottom, y0 + h0)
+    }
+    return bottom > top ? bottom - top : 0
+  }
+
   /**
    * 抵消缩放对条码「人读文字」的影响，使拉伸条码时只拉条码条、文字不变形。
    * 原理：group 的 scale 会叠加到子对象上，给文字设 1/scale 即可让其在屏幕上保持原始比例。
@@ -1359,23 +1387,32 @@ export class CanvasController {
     const hasOld = curW > 0 && curH > 0
     let kx: number
     let ky: number
-    if (hasOld) {
-      if (is2d) {
-        // 2D 码必须等比（否则无法扫描），沿用原逻辑
-        const k = Math.max(curW, curH) / Math.max(built.w, built.h)
-        kx = k
-        ky = k
-      } else {
-        // 一维码保留用户的非等比拉伸：条宽随宽度、条高随高度
-        //（旧实现只按高度算等比 k，会把用户手动拉宽/拉扁的结果重置掉）
-        kx = curW / (built.w || 1)
-        ky = curH / (built.h || 1)
-      }
-    } else {
-      const targetMm = oc._barcodeTargetMm ?? (is2d ? 18 : type === 'itf14' ? 12 : 8)
-      const k = is2d ? mmToPx(targetMm) / (built.w || 1) : mmToPx(targetMm) / (built.h || 1)
+    if (is2d) {
+      // 2D 码必须等比（否则无法扫描）
+      const targetMm = oc._barcodeTargetMm ?? 18
+      const k = hasOld
+        ? Math.max(curW, curH) / Math.max(built.w, built.h)
+        : mmToPx(targetMm) / (built.w || 1)
       kx = k
       ky = k
+    } else if (!hasOld) {
+      // 多为载入模板时 fabric 重建出的空组（尺寸为 0），按目标 mm 推算，避免缩成 0 不可见
+      const targetMm = oc._barcodeTargetMm ?? (type === 'itf14' ? 12 : 8)
+      const k = mmToPx(targetMm) / (built.h || 1)
+      kx = k
+      ky = k
+    } else {
+      // 一维码：缩放必须按「条码条区」换算，绝不能按含人读文字的整高换算。
+      // 否则调整「可读文字字号」→ fullHeight 变化 → ky 跟着变 → 整条码被压缩/放大。
+      // 优先用记录的单位几何；缺失时（旧模板）从旧组的模块矩形反推。
+      const prevBarH = oc._barcodeUnit?.barH ?? this.barcodeBarUnitHeight(old)
+      const kBar =
+        prevBarH > 0 && built.barH > 0 ? ((old.scaleY ?? 1) * prevBarH) / built.barH : curH / (built.h || 1)
+      // 保留用户手动造成的非等比拉伸比（未拉伸时 ratio = 1，即等比）
+      const syPrev = old.scaleY ?? 1
+      const ratio = Math.abs(syPrev) > 1e-6 ? (old.scaleX ?? 1) / syPrev : 1
+      ky = kBar
+      kx = kBar * ratio
     }
     group.set({
       scaleX: kx,
@@ -1394,6 +1431,7 @@ export class CanvasController {
     nc._barcodeType = oc._barcodeType
     nc._barcodeTargetMm = oc._barcodeTargetMm
     nc._barcodeSettings = oc._barcodeSettings
+    nc._barcodeUnit = { w: built.w, barH: built.barH }
     const wasActive = this.canvas.getActiveObject() === old
     this._suppressDirty = true
     this.canvas.remove(old)
@@ -1657,6 +1695,7 @@ export class CanvasController {
         props._barcodeType = c._barcodeType
         props._barcodeTargetMm = c._barcodeTargetMm
         props._barcodeSettings = c._barcodeSettings
+        if (c._barcodeUnit) props._barcodeUnit = c._barcodeUnit
         // 矢量条码组：模块矩形不写入 JSON（几百个对象太臃肿），载入时按元数据重建
         if (obj.type === 'group') delete (props as { objects?: unknown }).objects
       }
@@ -1795,6 +1834,7 @@ export class CanvasController {
       c._barcodeType = (s._barcodeType as BarcodeType) ?? 'code128'
       c._barcodeTargetMm = (s._barcodeTargetMm as number) ?? undefined
       c._barcodeSettings = (s._barcodeSettings as BarcodeRenderSettings) ?? undefined
+      c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number } | undefined) ?? undefined
     }
     if (c.kind === 'text' && typeof s.originalText === 'string') {
       c.originalText = s.originalText
