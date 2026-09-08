@@ -370,7 +370,7 @@ export class CanvasController {
         const selObjs = (self as { getObjects?: () => fabric.Object[] }).getObjects?.()
         if (selObjs && selObjs.includes(o)) continue
       }
-      const r = o.getBoundingRect()
+      const r = o.getBoundingRect(true)
       objX.push(r.left, r.left + r.width, r.left + r.width / 2)
       objY.push(r.top, r.top + r.height, r.top + r.height / 2)
     }
@@ -380,7 +380,7 @@ export class CanvasController {
   /** 在 moving/scaling 期间调：根据当前对象几何找最近候选线，吸附并刷新参考线 */
   private applySnap(target: fabric.Object | fabric.ActiveSelection | null) {
     if (!this._snapEnabled || !target) return
-    const rect = (target as fabric.Object).getBoundingRect()
+    const rect = (target as fabric.Object).getBoundingRect(true)
     const cands = this.collectCandidates(target)
     const tol = this._snapTol
     const xVals = [rect.left, rect.left + rect.width / 2, rect.left + rect.width]
@@ -641,7 +641,7 @@ export class CanvasController {
     if (targets.length < 1) return false
     this.pushHistory()
     // 外接包围盒（考虑旋转的 aCoords 不够，用 getBoundingRect 更准）
-    const rects = targets.map((o) => o.getBoundingRect())
+    const rects = targets.map((o) => o.getBoundingRect(true))
     const minL = Math.min(...rects.map((r) => r.left))
     const minT = Math.min(...rects.map((r) => r.top))
     const maxR = Math.max(...rects.map((r) => r.left + r.width))
@@ -649,7 +649,7 @@ export class CanvasController {
     const cX = (minL + maxR) / 2
     const cY = (minT + maxB) / 2
     targets.forEach((o) => {
-      const b = o.getBoundingRect()
+      const b = o.getBoundingRect(true)
       let dx = 0
       let dy = 0
       // 目标：把 o 的包围盒移动到对齐位；dx = 目标边 - o 当前边
@@ -893,7 +893,7 @@ export class CanvasController {
 
   /** 对象被拖到边缘附近时自动扩张画布（返回是否扩张过） */
   private autoGrowForObject(obj: fabric.Object): boolean {
-    const b = obj.getBoundingRect()
+    const b = obj.getBoundingRect(true)
     let grew = false
     if (b.left < GROW_TRIGGER_PX) {
       this.growWorkspace('left')
@@ -929,6 +929,7 @@ export class CanvasController {
       fill: '#ffffff',
       stroke: '#cbd5e1',
       strokeWidth: 1,
+      opacity: 1,
       selectable: false,
       evented: false,
       excludeFromExport: true,
@@ -943,7 +944,7 @@ export class CanvasController {
 
   /** 判断对象是否在标签区域内（用于导出时过滤 + 视觉提示） */
   isObjectInPaper(obj: fabric.Object): boolean {
-    const b = obj.getBoundingRect()
+    const b = obj.getBoundingRect(true)
     const right = this.paperOffsetX + this.paperPxW
     const bottom = this.paperOffsetY + this.paperPxH
     const intersects =
@@ -964,7 +965,7 @@ export class CanvasController {
         : [obj]
     let dirty = false
     for (const o of list) {
-      if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport || o === this.paperRect) continue
       const want = this.isObjectInPaper(o) ? 1 : 0.35
       if (Math.abs((o.opacity ?? 1) - want) > 0.01) {
         o.set({ opacity: want })

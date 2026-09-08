@@ -111,7 +111,7 @@ interface Box {
 }
 
 function leafBox(o: Leaf): Box {
-  const rect = o.getBoundingRect()
+  const rect = o.getBoundingRect(true)
   const angleDeg = ((o.angle ?? 0) % 360 + 360) % 360
   return {
     left: pxToMm(rect.left),
