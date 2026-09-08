@@ -973,7 +973,7 @@ export default function App() {
           <canvas ref={canvasElRef} className="shadow-xl ring-1 ring-black/10" />
 
           {/* 画布视口浮层：手抓平移开关 */}
-          <div className="absolute right-2 top-2 z-30 flex flex-col items-stretch gap-1 overflow-hidden rounded-lg border bg-white/95 p-1 shadow-md">
+          <div className={'absolute right-2 z-30 flex flex-col items-stretch gap-1 overflow-hidden rounded-lg border bg-white/95 p-1 shadow-md ' + (isCompact ? 'top-16' : 'top-2')}>
             <button
               type="button"
               onClick={() => setHand((v) => !v)}
