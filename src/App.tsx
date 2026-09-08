@@ -20,6 +20,7 @@ import {
 import { exportVectorPdf } from '@/lib/vectorExport'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
 import type { PaperSize, DataRow, ToolType } from '@/types/template'
+import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
@@ -37,7 +38,6 @@ import {
   ArrowDown,
 } from 'lucide-react'
 
-const DEFAULT_PAPER: PaperSize = { widthMm: 150, heightMm: 100 }
 /** 批量渲染默认份数 */
 const DEFAULT_COPIES = 10
 

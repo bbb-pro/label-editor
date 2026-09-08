@@ -12,6 +12,9 @@ export interface PaperSize {
   heightMm: number
 }
 
+/** 新建/清空画布时的默认纸张尺寸（单一事实来源：App 初始化 + 面板提示共用） */
+export const DEFAULT_PAPER: PaperSize = { widthMm: 150, heightMm: 100 }
+
 /** 工具类型（左侧工具条触发指令，与元素 kind 解耦） */
 export type ToolType =
   | 'text'

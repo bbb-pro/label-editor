@@ -183,9 +183,11 @@ export function renderBarcodeDataUrl(
     backgroundcolor: 'FFFFFF',
   }
   if (showText) {
-    // pt → bwip 内部按相对单位，textsize 需随 scale 调整以保持可读
+    // pt → bwip 内部按相对单位，textsize 需随 scale 调整以保持可读。
+    // 下限只挡非法值（≥1）：不能设高（旧值 8 会把 ≤10pt 全部锁成同一大小，
+    // 用户调小字号时文字不再变化）。
     opts.textfont = 'OCR-B'
-    opts.textsize = Math.max(8, Math.round((s.textSizePt * 72) / 96 / s.scale * 2))
+    opts.textsize = Math.max(1, Math.round((s.textSizePt * 72) / 96 / s.scale * 2))
     opts.textxalign = 'center'
     opts.textgaps = 3
   }

@@ -1314,7 +1314,9 @@ export class CanvasController {
             originX: 'center',
             originY: 'center',
             fontFamily: 'Arial',
-            fontSize: Math.max(6, band * 0.8),
+            // 下限只挡非法值（≥2）：旧值 6px 会在 band 变小后锁住文字大小，
+            // 导致「可读文字字号」调小时文字不再变化
+            fontSize: Math.max(2, band * 0.8),
             fill: '#000000',
             textAlign: 'center',
             selectable: false,

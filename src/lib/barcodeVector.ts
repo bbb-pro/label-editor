@@ -125,7 +125,9 @@ export function renderBarcodeVectorRects(
       const o2: Record<string, unknown> = { ...opts, includetext: true }
       if ((settings as Partial<BarcodeRenderSettings> | undefined)?.showText !== false) {
         o2.textfont = 'OCR-B'
-        o2.textsize = Math.max(8, Math.round(((settings?.textSizePt ?? 9) * 72) / 96 / (settings?.scale ?? s.scale) * 2))
+        // 与 renderBarcodeDataUrl 保持同一换算；下限只挡非法值（≥1），
+        // 保证 ≤10pt 时字号继续跟随变小（旧值 8 会锁死）
+        o2.textsize = Math.max(1, Math.round(((settings?.textSizePt ?? 9) * 72) / 96 / (settings?.scale ?? s.scale) * 2))
         o2.textxalign = 'center'
         o2.textgaps = 3
       }

@@ -41,6 +41,7 @@ import {
   Copy,
 } from 'lucide-react'
 import type { PaperSize, ShapeType } from '@/types/template'
+import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec } from '@/types/editor'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { FONT_FAMILIES, FONT_SIZES_PT } from '@/lib/textStyles'
@@ -123,7 +124,7 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           />
         </div>
         <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
-          默认 40 × 30 mm · 提示：修改后立即应用到画布。
+          默认 {DEFAULT_PAPER.widthMm} × {DEFAULT_PAPER.heightMm} mm · 提示：修改后立即应用到画布。
         </p>
       </Section>
 
