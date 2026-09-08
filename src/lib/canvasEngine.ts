@@ -490,7 +490,10 @@ export class CanvasController {
     const out: fabric.Object[] = []
     const walk = (list: fabric.Object[]) => {
       for (const o of list) {
-        if (this.isGroup(o)) {
+        // 条码虽是 fabric.Group，但它是「原子内容对象」，必须整体作为叶子返回：
+        // 若被穿透成子矩形，refreshAllContent 就永远遍历不到条码本身，
+        // rerenderBarcode 不会被调用 → 数据源/序列化递增时条码不跟随（一直停在首张值）。
+        if (this.isGroup(o) && !isContentKind(cf(o).kind)) {
           walk((o as fabric.Group).getObjects())
         } else {
           out.push(o)

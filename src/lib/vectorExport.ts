@@ -40,14 +40,23 @@ function n(v: number): number {
  *  仅保留落在标签区域内的对象；纸外的临时摆放不导出/不打印。 */
 function flattenLeaves(ctrl: CanvasController): Leaf[] {
   const out: Leaf[] = []
-  const walk = (list: fabric.Object[]) => {
+  // insideGroup：子对象是相对 group 的局部坐标，不能再按「是否在纸内」判定，否则会被误过滤
+  const walk = (list: fabric.Object[], insideGroup = false) => {
     for (const o of list) {
       // 纸卡背景矩形(excludeFromExport)和标签外的暂存对象都跳过
       if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
-      if (!ctrl.isObjectInPaper(o)) continue
+      const kind = (o as unknown as { kind?: string }).kind
       const children = (o as unknown as { _objects?: fabric.Object[] })._objects
-      if (o.type === 'group' && Array.isArray(children)) walk(children)
-      else out.push(o)
+      // 条码是 Group，但它是原子内容对象，必须整体交给 drawBarcodeVector。
+      // 若穿透成子矩形：子矩形是 group 局部坐标 → isObjectInPaper 误判纸外 → 条码在 PDF 里消失。
+      const isBarcode = kind === 'barcode'
+      if (!isBarcode && o.type === 'group' && Array.isArray(children)) {
+        if (!insideGroup && !ctrl.isObjectInPaper(o)) continue
+        walk(children, true)
+        continue
+      }
+      if (!insideGroup && !ctrl.isObjectInPaper(o)) continue
+      out.push(o)
     }
   }
   walk(ctrl.canvas.getObjects())
@@ -110,16 +119,25 @@ interface Box {
   angleDeg: number
 }
 
+/** 纸张原点（工作区坐标,px）：getBoundingRect(true) 返回的是「工作区」坐标，
+ *  而 PDF 页面尺寸只等于纸张大小，绘制前必须减去该原点，
+ *  否则所有内容都被画到 ~600mm 之外的页面外 → 表现为「导出空白 PDF」。
+ *  由 exportVectorPdf 入口按当前纸张偏移设置。 */
+let originX = 0
+let originY = 0
+
 function leafBox(o: Leaf): Box {
   const rect = o.getBoundingRect(true)
   const angleDeg = ((o.angle ?? 0) % 360 + 360) % 360
+  const left = rect.left - originX
+  const top = rect.top - originY
   return {
-    left: pxToMm(rect.left),
-    top: pxToMm(rect.top),
+    left: pxToMm(left),
+    top: pxToMm(top),
     w: pxToMm(rect.width),
     h: pxToMm(rect.height),
-    cx: pxToMm(rect.left + rect.width / 2),
-    cy: pxToMm(rect.top + rect.height / 2),
+    cx: pxToMm(left + rect.width / 2),
+    cy: pxToMm(top + rect.height / 2),
     angleDeg,
   }
 }
@@ -535,6 +553,11 @@ export async function exportVectorPdf(
   const { copies = 1, name = '标签', onProgress } = options
   const canvas = controller.canvas
   if (canvas.getObjects().length === 0) return
+
+  // 坐标原点平移到「纸张左上角」：leafBox 用工作区坐标，而 PDF 页面尺寸只等于纸张
+  const pb = controller.getPaperBoundsPx()
+  originX = pb.left
+  originY = pb.top
 
   const serialActive = controller.hasActiveSerial()
   const pageCount = serialActive ? Math.max(1, Math.floor(copies)) : 1
