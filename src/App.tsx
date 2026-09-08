@@ -131,27 +131,46 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── 纸张标尺：随 paper/画布重建，随 zoom 重绘 ─────────────
+  // ── 纸张标尺：屏幕空间覆盖层，挂在视口(stage)上，随 zoom/pan 重绘 ─────────────
   useEffect(() => {
-    const ctrl = ctrlRef.current
-    const wrap = canvasWrapRef.current
-    if (!ctrl || !wrap) return
+    const stage = stageRef.current
+    if (!stage) return
     rulerHandleRef.current?.destroy()
-    const { w, h } = ctrl.getCanvasSizePx()
-    rulerHandleRef.current = mountRulers(wrap, w, h)
-    rulerHandleRef.current.redraw(zoomRef.current)
+    rulerHandleRef.current = mountRulers(stage)
+    syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paper])
 
-  useEffect(() => {
-    rulerHandleRef.current?.redraw(zoom)
-  }, [zoom])
+  // ── 视口缩放 + 平移（fabric viewportTransform，矢量重绘）────
 
-  // ── 视口缩放 + 平移（CSS transform，保持 mm↔px 恒等）────
-  const applyView = useCallback((zz: number, px: number, py: number) => {
+  /** 同步标尺：视口尺寸 + 当前 zoom/pan。
+   *  标尺是「屏幕空间覆盖层」，不随画布变换，故每次视图变化都要按
+   *  屏幕坐标 → 纸张毫米的映射重算刻度，才能与纸张严格对齐。 */
+  const syncRulers = useCallback((zz: number, px: number, py: number) => {
+    const rh = rulerHandleRef.current
     const ctrl = ctrlRef.current
-    // 改用 fabric 原生 viewportTransform:矢量重绘,放大不再糊
-    if (ctrl) ctrl.applyViewportTransform(zz, px, py)
+    const stage = stageRef.current
+    if (!rh || !ctrl || !stage) return
+    rh.resize(stage.clientWidth, stage.clientHeight)
+    const pb = ctrl.getPaperBoundsPx()
+    rh.redraw({
+      zoom: zz,
+      panX: px,
+      panY: py,
+      paperOffsetX: pb.left,
+      paperOffsetY: pb.top,
+    })
   }, [])
+
+  const applyView = useCallback(
+    (zz: number, px: number, py: number) => {
+      const ctrl = ctrlRef.current
+      // 改用 fabric 原生 viewportTransform:矢量重绘,放大不再糊
+      if (ctrl) ctrl.applyViewportTransform(zz, px, py)
+      syncRulers(zz, px, py)
+    },
+    [syncRulers],
+  )
 
   const applyZoom = useCallback(
     (next: number) => {
@@ -247,6 +266,7 @@ export default function App() {
     const ro = new ResizeObserver(() => {
       const ctrl = ctrlRef.current
       if (ctrl) ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
+      syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
       // 初始挂载/刷新后的一小段时间内容器会因字体加载等发生多次 reflow，
       // 若此时自动 fit 会覆盖掉“首开/新建”设置的 100%。首段宽限期内忽略。
       if (Date.now() - mountedAt < 700) return

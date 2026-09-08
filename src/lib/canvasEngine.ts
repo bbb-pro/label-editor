@@ -224,6 +224,8 @@ export class CanvasController {
       const t = (e as { target?: fabric.Object }).target ?? null
       // 文本框：拖角/拖边只改“盒宽”，字号恒定、文字自动重排（不拉伸文字）
       if (t instanceof fabric.Textbox) this.resizeTextboxBox(t)
+      // 条码：拉伸只作用于条码条，抵消非等比部分，避免人读文字被拉变形
+      else if (t && isBarcodeKind(cf(t).kind)) this.applyBarcodeTextCompensation(t)
       this.updateOutsidePaperVisual(t)
       this.applySnap(t)
     })
@@ -1324,6 +1326,26 @@ export class CanvasController {
    * 用新几何替换画布上的条码对象（保持 id/名称/元数据/选中态/位置角度）。
    * fabric Group 不支持原位整体换children，直接换对象最稳。
    */
+  /**
+   * 抵消缩放对条码「人读文字」的影响，使拉伸条码时只拉条码条、文字不变形。
+   * 原理：group 的 scale 会叠加到子对象上，给文字设 1/scale 即可让其在屏幕上保持原始比例。
+   * 但**等比**缩放时文字本就应该随之变大，因此只抵消「非等比」的那部分：
+   * 取等比分量 u = min(sx, sy)，令文字视觉缩放恒为 u（等比时 u=sx=sy → 正常跟随放大）。
+   */
+  private applyBarcodeTextCompensation(obj: fabric.Object) {
+    const sx = obj.scaleX ?? 1
+    const sy = obj.scaleY ?? 1
+    if (!sx || !sy) return
+    const uniform = Math.min(Math.abs(sx), Math.abs(sy))
+    const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
+    if (!Array.isArray(kids)) return
+    for (const k of kids) {
+      // 只处理人读文字（条码条是 rect，保持随拉伸变化）
+      if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
+      k.set({ scaleX: uniform / sx, scaleY: uniform / sy })
+    }
+  }
+
   private replaceBarcodeObject(old: fabric.Object, type: BarcodeType, text: string, settings: BarcodeRenderSettings) {
     const built = this.buildBarcodeGroup(type, text, settings)
     if (!built) return
@@ -1335,20 +1357,35 @@ export class CanvasController {
     // 旧对象有有效尺寸（正常重绘 / 手动缩放过）→ 沿用当前尺寸，保留手动缩放；
     // 否则（多为载入模板时 fabric 重建出的空组，尺寸为 0）按目标 mm 推算，避免缩成 0 不可见。
     const hasOld = curW > 0 && curH > 0
-    let k: number
+    let kx: number
+    let ky: number
     if (hasOld) {
-      k = is2d ? Math.max(curW, curH) / Math.max(built.w, built.h) : curH / (built.h || 1)
+      if (is2d) {
+        // 2D 码必须等比（否则无法扫描），沿用原逻辑
+        const k = Math.max(curW, curH) / Math.max(built.w, built.h)
+        kx = k
+        ky = k
+      } else {
+        // 一维码保留用户的非等比拉伸：条宽随宽度、条高随高度
+        //（旧实现只按高度算等比 k，会把用户手动拉宽/拉扁的结果重置掉）
+        kx = curW / (built.w || 1)
+        ky = curH / (built.h || 1)
+      }
     } else {
       const targetMm = oc._barcodeTargetMm ?? (is2d ? 18 : type === 'itf14' ? 12 : 8)
-      k = is2d ? mmToPx(targetMm) / built.w : mmToPx(targetMm) / (built.h || 1)
+      const k = is2d ? mmToPx(targetMm) / (built.w || 1) : mmToPx(targetMm) / (built.h || 1)
+      kx = k
+      ky = k
     }
     group.set({
-      scaleX: k,
-      scaleY: k,
+      scaleX: kx,
+      scaleY: ky,
       left: old.left,
       top: old.top,
       angle: old.angle ?? 0,
     })
+    // 重建后重新抵消非等比部分，保证人读文字不变形
+    this.applyBarcodeTextCompensation(group)
     const nc = cf(group)
     nc.id = oc.id
     nc.kind = oc.kind
