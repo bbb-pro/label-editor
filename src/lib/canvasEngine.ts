@@ -39,6 +39,11 @@ interface CustomFields {
    * 拉伸条码时保持它恒定 → 文字不随拉伸变化；只有改「可读文字字号」时才变。
    */
   _barcodeTextScale?: number
+  /**
+   * 条区下沿到人读文字中心的额外距离(mm)。>0 把文字往下推、拉开与条区间隙；
+   * <0 把文字上移靠近条区。默认 0。
+   */
+  _barcodeTextOffsetMm?: number
   originalText?: string
   /** 形状子类型（kind === 'shape' 时生效） */
   _shapeType?: ShapeType
@@ -738,6 +743,7 @@ export class CanvasController {
     let text: string | null = null
     let barcodeType: BarcodeType | undefined
     let barcodeSettings: BarcodeRenderSettings | undefined
+    let barcodeTextOffsetMm: number | undefined
     let textFormat: TextFormatSnapshot | undefined
     let textRegion: { border: boolean; bg: boolean } | undefined
     let strokeWidth: number | undefined
@@ -766,6 +772,7 @@ export class CanvasController {
       text = c._barcodeRaw ?? ''
       barcodeType = c._barcodeType
       barcodeSettings = c._barcodeSettings ?? (barcodeType ? defaultSettingsFor(barcodeType) : undefined)
+      barcodeTextOffsetMm = c._barcodeTextOffsetMm ?? 0
     } else if (isStrokeKind(kind)) {
       strokeWidth = obj.strokeWidth ?? 1
       strokeColor = (obj.stroke as string) || '#000000'
@@ -807,6 +814,7 @@ export class CanvasController {
       serial: isContentKind(kind) ? serial : undefined,
       barcodeType,
       barcodeSettings,
+      barcodeTextOffsetMm,
       shapeType,
       textFormat,
       textRegion,
@@ -1268,13 +1276,21 @@ export class CanvasController {
 
   addBarcode(type: BarcodeType, raw = is2dType(type) ? 'HELLO-{{code}}' : '123456-{{code}}') {
     const is2d = is2dType(type)
-    // 2D 以正方形边长(mm)为目标，一维码以高度(mm)为目标
+    // 2D 以正方形边长(mm)为目标；一维码以「条区高度(mm)」为目标（文字带在条区之下叠加）
     const targetMm = is2d ? 18 : type === 'itf14' ? 12 : 8
     const settings = defaultSettingsFor(type)
     const built = this.buildBarcodeGroup(type, this.resolveDesign(raw), settings)
     if (!built) return
     const { group, w, h } = built
-    const k = mmToPx(targetMm) / (h || 1)
+    // 2D 码必须等比；一维码按条区锚定 + 「超高」保底容纳人读文字
+    let k = mmToPx(targetMm) / (is2d ? Math.max(w, h) : built.barH || h || 1)
+    if (!is2d) {
+      const bandUnit = h - built.barH
+      if (bandUnit > 1) {
+        const needSy = ptToPx(Math.max(1, settings.textSizePt ?? 9)) / (bandUnit * 0.72)
+        if (needSy > k) k = needSy
+      }
+    }
     group.set({ scaleX: k, scaleY: k })
     const c = cf(group)
     c._barcodeTargetMm = targetMm
@@ -1282,6 +1298,9 @@ export class CanvasController {
     c._barcodeSettings = settings
     c._barcodeUnit = { w: built.w, barH: built.barH }
     c._barcodeTextScale = k
+    c._barcodeTextOffsetMm = 0
+    // 让新增条码的人读文字首帧就以「字号」清晰呈现（方正、不随组缩放被压小）
+    if (!is2d) this.applyBarcodeTextCompensation(group)
     group.set({ left: this.paperCenter().x - (w * k) / 2, top: this.paperCenter().y - (h * k) / 2 })
     this.finalizeObject(group, 'barcode', raw)
   }
@@ -1291,6 +1310,7 @@ export class CanvasController {
     type: BarcodeType,
     text: string,
     settings: BarcodeRenderSettings,
+    textOffsetMm = 0,
   ): { group: fabric.Group; w: number; h: number; barH: number } | null {
     try {
       const vec = renderBarcodeVectorRects(type, text, settings)
@@ -1313,10 +1333,12 @@ export class CanvasController {
       if (showText && vec.fullHeight) {
         const band = vec.fullHeight - vec.height
         h = vec.fullHeight
+        // 文字 child 离条区下沿额外偏移(mm)：>0 拉开距离，<0 拉近
+        const textOffsetPx = mmToPx(textOffsetMm || 0)
         children.push(
           new fabric.Text(text, {
             left: vec.width / 2,
-            top: vec.height + band / 2,
+            top: vec.height + band / 2 + textOffsetPx,
             originX: 'center',
             originY: 'center',
             fontFamily: 'Arial',
@@ -1365,54 +1387,49 @@ export class CanvasController {
   /**
    * 让条码「人读文字」完全不随拉伸变化 —— 文字大小只由「可读文字字号」决定。
    *
-   * 原理：group 的 scale 会叠加到子对象上，给文字设 T/sx、T/sy 后，
-   * 文字在画布上的最终视觉缩放恒为 T（与 group scale 无关）。
-   * T 记录在 _barcodeTextScale：新建时 = 初始 group scale；之后无论怎么拉伸都保持恒定；
-   * 只有调整字号时重建条码，文字的「未缩放字号」变化而 T 不变 → 仅字号生效。
+   * 原理：fabric Group 会把自身 scale 叠加到子对象。若给文字 child 设
+   * scaleX = glyphPx/(fontSize·sx)、scaleY = glyphPx/(fontSize·sy)，则其
+   * 在画布上的视觉字号 = fontSize×childScale×groupScale = glyphPx：
+   *  - 与 group 拉伸（sx/sy）无关 → 拉伸条码条时文字字号恒定、字形方正（不拉扁）；
+   *  - glyphPx 由「可读文字字号」换算成真实逻辑 px = ptToPx(textSizePt)，
+   *    随字号线性、清晰可见（旧实现用固定小缩放 ≈0.3，把 9pt 压成亚像素 ~2.7px，
+   *    故调字号只见空间变大、字几乎不变）。
+   *
+   * glyphPx 还会参考 band 的实际可用空间做宽松封顶，避免极端小码上文字溢出成叠印；
+   * 正常尺寸的码（band 逻辑高 ≥ 目标字号）下不封顶，字号完全按设置生效。
    */
-  private applyBarcodeTextCompensation(obj: fabric.Object, base?: number) {
+  private applyBarcodeTextCompensation(obj: fabric.Object) {
     const sx = obj.scaleX ?? 1
     const sy = obj.scaleY ?? 1
     if (!sx || !sy) return
     const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
     if (!Array.isArray(kids)) return
     const c = cf(obj)
-    const stored = c._barcodeTextScale
-    let t: number
-    if (typeof base === 'number' && base > 0) t = base
-    else if (typeof stored === 'number' && stored > 0) t = stored
-    else {
-      const fb = this.barcodeTextBaseScale(obj)
-      if (!(fb > 0)) return
-      t = fb
-    }
-    c._barcodeTextScale = t
+    const textPt = Math.max(1, c._barcodeSettings?.textSizePt ?? 9)
+    const wantPx = ptToPx(textPt)
+    // 文字带可用逻辑高(px) = 整组逻辑高 − 条区逻辑高。小码时用它封顶防叠印，大码时不限。
+    const barUnitH = c._barcodeUnit?.barH ?? this.barcodeBarUnitHeight(obj)
+    const bandPx = (Math.abs(obj.height ?? 0) - Math.abs(barUnitH)) * Math.abs(sy)
+    const capPx = bandPx > 1 ? bandPx * 1.1 : Infinity
+    const glyphPx = Math.min(wantPx, capPx)
+    c._barcodeTextScale = Math.min(sx, sy) // 保留字段(兼容旧模板读取/序列化)；不再驱动字号
     for (const k of kids) {
       // 只处理人读文字（条码条是 rect，保持随拉伸变化）
       if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
-      k.set({ scaleX: t / sx, scaleY: t / sy })
+      const fs = Math.max((k as fabric.Text).fontSize ?? 1, 1)
+      k.set({ scaleX: glyphPx / (fs * Math.abs(sx)), scaleY: glyphPx / (fs * Math.abs(sy)) })
     }
-  }
-
-  /**
-   * 读取条码人读文字「当前」的绝对视觉缩放（= 子对象 scale × group scale）。
-   * 用于 _barcodeTextScale 缺失时（旧模板）的兜底，保证行为连续、不跳变。
-   */
-  private barcodeTextBaseScale(obj: fabric.Object): number {
-    const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
-    if (Array.isArray(kids)) {
-      for (const k of kids) {
-        if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
-        return (k.scaleX ?? 1) * (obj.scaleX ?? 1)
-      }
-    }
-    return Math.min(Math.abs(obj.scaleX ?? 1), Math.abs(obj.scaleY ?? 1))
   }
 
   private replaceBarcodeObject(old: fabric.Object, type: BarcodeType, text: string, settings: BarcodeRenderSettings) {
-    const built = this.buildBarcodeGroup(type, text, settings)
-    if (!built) return
     const oc = cf(old)
+    const built = this.buildBarcodeGroup(
+      type,
+      text,
+      settings,
+      oc._barcodeTextOffsetMm || 0,
+    )
+    if (!built) return
     const group = built.group
     const is2d = is2dType(type)
     const curW = old.getScaledWidth()
@@ -1431,9 +1448,16 @@ export class CanvasController {
       kx = k
       ky = k
     } else if (!hasOld) {
-      // 多为载入模板时 fabric 重建出的空组（尺寸为 0），按目标 mm 推算，避免缩成 0 不可见
+      // 多为载入模板时 fabric 重建出的空组（尺寸为 0）。一维码按「条区目标高」定基缩放，
+      // 再叠加文字带所需的「超高」——使新增/载入的一维码天然能容纳可读文字（字清晰）。
       const targetMm = oc._barcodeTargetMm ?? (type === 'itf14' ? 12 : 8)
-      const k = mmToPx(targetMm) / (built.h || 1)
+      let k = mmToPx(targetMm) / (built.barH || built.h || 1)
+      const bandUnit = built.h - built.barH
+      if (bandUnit > 1) {
+        const tsp = oc._barcodeSettings?.textSizePt ?? 9
+        const needSy = ptToPx(Math.max(1, tsp)) / (bandUnit * 0.72)
+        if (needSy > k) k = needSy
+      }
       kx = k
       ky = k
     } else {
@@ -1447,7 +1471,16 @@ export class CanvasController {
       const syPrev = old.scaleY ?? 1
       const ratio = Math.abs(syPrev) > 1e-6 ? (old.scaleX ?? 1) / syPrev : 1
       ky = kBar
-      kx = kBar * ratio
+      // 「超高再长」保底：人读文字带需要的纵向缩放若大于条区锚定值，则抬高 ky，
+      // 让整码长高到能容纳目标字号（方案：默认整码高度固定，字号超出文字带才增高）。
+      // band 栅格 = 整高 − 条区高（仅 1D 含文字时 > 0）。计算放在 ky 用前。
+      const bandUnit = built.h - built.barH
+      if (bandUnit > 1) {
+        const tsp = oc._barcodeSettings?.textSizePt ?? 9
+        const needSy = ptToPx(Math.max(1, tsp)) / (bandUnit * 0.72) // band 留 28% 上下间隙
+        if (needSy > ky) ky = needSy
+      }
+      kx = ky * ratio
     }
     group.set({
       scaleX: kx,
@@ -1456,8 +1489,6 @@ export class CanvasController {
       top: old.top,
       angle: old.angle ?? 0,
     })
-    // 重建后沿用原有的文字绝对缩放：拉伸/改码制都不改变文字大小，只有字号会改变
-    this.applyBarcodeTextCompensation(group, this.barcodeTextBaseScale(old))
     const nc = cf(group)
     nc.id = oc.id
     nc.kind = oc.kind
@@ -1467,6 +1498,9 @@ export class CanvasController {
     nc._barcodeTargetMm = oc._barcodeTargetMm
     nc._barcodeSettings = oc._barcodeSettings
     nc._barcodeUnit = { w: built.w, barH: built.barH }
+    nc._barcodeTextOffsetMm = oc._barcodeTextOffsetMm || 0
+    // 重建后按「可读文字字号」刷新人读文字视觉：文字不随拉伸/改码制变化，仅字号生效
+    if (!is2d && settings.showText !== false) this.applyBarcodeTextCompensation(group)
     const wasActive = this.canvas.getActiveObject() === old
     this._suppressDirty = true
     this.canvas.remove(old)
@@ -1533,6 +1567,21 @@ export class CanvasController {
     this.events.onDirty()
   }
 
+  /** 设置当前条码对象的人读文字与条区的额外距离(mm)。>0 拉开，<0 拉近 */
+  setBarcodeTextOffset(mm: number) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    const c = cf(obj)
+    if (!isBarcodeKind(c.kind)) return
+    const next = Math.max(-10, Math.min(30, mm))
+    if ((c._barcodeTextOffsetMm || 0) === next) return
+    c._barcodeTextOffsetMm = next
+    this.patchSerialize(obj)
+    this.rerenderBarcode(obj)
+    this.emitActive()
+    this.events.onDirty()
+  }
+
   /** 设置当前内容对象的前缀/后缀（纯文本，拼在内容前后） */
   setContentDecor(patch: Partial<{ prefix: string; suffix: string }>) {
     const obj = this.getActiveObject()
@@ -1556,11 +1605,16 @@ export class CanvasController {
     const c = cf(obj)
     if (!isContentKind(c.kind)) return
     if (serial && serial.enabled) {
-      // 补零位数：内容末尾数字带前导零时按其位数；否则用面板设定的补零位数
-      const run = /(\d+)\s*$/.exec(this.coreDesign(c))
-      const digits = run ? run[1] : ''
-      const hasLeadingZero = digits.length > 1 && digits.startsWith('0')
-      const minDigits = hasLeadingZero ? digits.length : Math.max(1, serial.minDigits)
+      // 补零位数默认以面板设定为准。
+      // 仅当该对象此前【尚未启用】序列化时，才按文本末尾数字段的位数兜底一次，
+      // 作为“初始值 = 文本框数字位数”的默认（原文 “001” → 3、“123” → 3、“1” → 1）。
+      // 一旦已启用，用户后续改「补零位数」一律以其为准，绝不再被原文位数覆盖。
+      let minDigits = Math.max(1, serial.minDigits)
+      if (!c._serial?.enabled) {
+        const run = /(\d+)\s*$/.exec(this.coreDesign(c))
+        const digits = run ? run[1] : ''
+        if (digits.length >= 1) minDigits = Math.max(1, digits.length)
+      }
       // 起始值尊重用户在面板设定的值（默认 1）；step 照用
       c._serial = { enabled: true, start: Math.max(0, serial.start), step: Math.max(1, serial.step), minDigits }
     } else {
@@ -1731,6 +1785,7 @@ export class CanvasController {
         props._barcodeTargetMm = c._barcodeTargetMm
         props._barcodeSettings = c._barcodeSettings
         if (c._barcodeUnit) props._barcodeUnit = c._barcodeUnit
+        if (c._barcodeTextOffsetMm) props._barcodeTextOffsetMm = c._barcodeTextOffsetMm
         if (typeof c._barcodeTextScale === 'number') props._barcodeTextScale = c._barcodeTextScale
         // 矢量条码组：模块矩形不写入 JSON（几百个对象太臃肿），载入时按元数据重建
         if (obj.type === 'group') delete (props as { objects?: unknown }).objects
@@ -1872,6 +1927,7 @@ export class CanvasController {
       c._barcodeSettings = (s._barcodeSettings as BarcodeRenderSettings) ?? undefined
       c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number } | undefined) ?? undefined
       c._barcodeTextScale = (s._barcodeTextScale as number | undefined) ?? undefined
+      c._barcodeTextOffsetMm = (s._barcodeTextOffsetMm as number | undefined) ?? 0
     }
     if (c.kind === 'text' && typeof s.originalText === 'string') {
       c.originalText = s.originalText

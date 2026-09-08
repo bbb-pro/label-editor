@@ -596,6 +596,18 @@ export default function App() {
       })
     }
   }, [])
+  const onBarcodeTextOffsetChange = useCallback((mm: number) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    try {
+      ctrl.setBarcodeTextOffset(mm)
+    } catch (err) {
+      toast.error('条码距离更新失败', {
+        description: err instanceof Error ? err.message : '请调整参数后重试',
+      })
+    }
+  }, [])
   const onContentDecorChange = useCallback((patch: { prefix?: string; suffix?: string }) => {
     const ctrl = ctrlRef.current
     if (!ctrl) return
@@ -1110,6 +1122,7 @@ export default function App() {
             onBarcodeTypeChange={onBarcodeTypeChange}
             onNameChange={onNameChange}
             onBarcodeSettingsChange={onBarcodeSettingsChange}
+            onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
             onContentDecorChange={onContentDecorChange}
             onSerialChange={onSerialChange}
             onDuplicate={onDuplicate}
@@ -1161,6 +1174,7 @@ export default function App() {
                 onBarcodeTypeChange={onBarcodeTypeChange}
                 onNameChange={onNameChange}
                 onBarcodeSettingsChange={onBarcodeSettingsChange}
+            onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
                 onContentDecorChange={onContentDecorChange}
                 onSerialChange={onSerialChange}
                 onDuplicate={onDuplicate}

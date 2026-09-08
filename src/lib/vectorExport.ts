@@ -445,6 +445,7 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
   const c = o as unknown as {
     _barcodeType?: BarcodeType
     _barcodeSettings?: Partial<BarcodeRenderSettings>
+    _barcodeTextOffsetMm?: number
   }
   const type: BarcodeType = c._barcodeType ?? 'code128'
   const rawText = ctrl.contentStringFor(o) || ' '
@@ -483,7 +484,9 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
     const textBandH = box.h - barHmmF
     if (textBandH > 0.5) {
       const fontSizePt = Math.min(textPt, textBandH * 72 / 25.4 * 0.72)
-      const cy = box.top + barHmmF + textBandH / 2
+      const textOffsetMm = c._barcodeTextOffsetMm ?? 0
+      // 文字带中心 + 额外偏移（mm）：>0 把文字往下推拉开与条区距离，<0 拉近
+      const cy = box.top + barHmmF + textBandH / 2 + textOffsetMm
       doc.setFont(FONT_ALIAS)
       doc.setFontSize(fontSizePt)
       doc.text(rawText, n(box.left + box.w / 2), n(cy + (fontSizePt / 72) * 25.4 * 0.35), { align: 'center' })

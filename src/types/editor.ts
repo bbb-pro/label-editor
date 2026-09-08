@@ -64,6 +64,8 @@ export interface ActiveObject {
   barcodeType?: BarcodeType
   /** 仅条码对象：渲染设置 */
   barcodeSettings?: BarcodeRenderSettings
+  /** 仅条码对象：人读文字相对条区的额外距离(mm)。>0 拉开，<0 拉近；默认 0。 */
+  barcodeTextOffsetMm?: number
   /** 仅文本对象：文本格式 */
   textFormat?: TextFormatSnapshot
   /** 仅文本对象：区域框（开启后显示边框+底色，类似"区域文本框"） */

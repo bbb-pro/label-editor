@@ -63,6 +63,8 @@ interface PropertyPanelProps {
   onBarcodeTypeChange: (t: BarcodeType) => void
   onNameChange: (name: string) => void
   onBarcodeSettingsChange: (patch: Partial<BarcodeRenderSettings>) => void
+  /** 条码：人读文字与条区距离(mm) */
+  onBarcodeTextOffsetChange?: (mm: number) => void
   /** 内容对象：前缀/后缀 */
   onContentDecorChange: (patch: { prefix?: string; suffix?: string }) => void
   /** 内容对象：序列化配置（null=关闭） */
@@ -140,6 +142,7 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onBarcodeTypeChange={props.onBarcodeTypeChange}
           onNameChange={props.onNameChange}
           onBarcodeSettingsChange={props.onBarcodeSettingsChange}
+          onBarcodeTextOffsetChange={props.onBarcodeTextOffsetChange}
           onContentDecorChange={props.onContentDecorChange}
           onSerialChange={props.onSerialChange}
           onDuplicate={props.onDuplicate}
@@ -330,6 +333,7 @@ function SelectedObjectPanel({
   onBarcodeTypeChange,
   onNameChange,
   onBarcodeSettingsChange,
+  onBarcodeTextOffsetChange,
   onContentDecorChange,
   onSerialChange,
   onDuplicate,
@@ -532,6 +536,8 @@ function SelectedObjectPanel({
             is2d={active.barcodeType ? is2dType(active.barcodeType) : false}
             qrFamily={active.barcodeType ? isQrFamily(active.barcodeType) : false}
             onChange={onBarcodeSettingsChange}
+            textOffsetMm={active.barcodeTextOffsetMm}
+            onTextOffsetChange={onBarcodeTextOffsetChange}
           />
         </Section>
       )}
@@ -614,11 +620,15 @@ function BarcodeSettingsControls({
   is2d,
   qrFamily,
   onChange,
+  textOffsetMm,
+  onTextOffsetChange,
 }: {
   settings: BarcodeRenderSettings
   is2d: boolean
   qrFamily?: boolean
   onChange: (patch: Partial<BarcodeRenderSettings>) => void
+  textOffsetMm?: number
+  onTextOffsetChange?: (mm: number) => void
 }) {
   const eccLevels: Array<'L' | 'M' | 'Q' | 'H'> = ['L', 'M', 'Q', 'H']
   const eccLabels: Record<'L' | 'M' | 'Q' | 'H', string> = { L: '7%', M: '15%', Q: '25%', H: '30%' }
@@ -669,6 +679,14 @@ function BarcodeSettingsControls({
           suffix="pt"
           step={1}
           onChange={(v) => onChange({ textSizePt: Math.max(4, Math.min(48, v)) })}
+        />
+      )}
+      {!is2d && settings.showText && onTextOffsetChange && (
+        <MmField
+          label="距条区距离 (mm)"
+          value={textOffsetMm ?? 0}
+          step={0.5}
+          onChange={(v) => onTextOffsetChange(v)}
         />
       )}
       <p className="text-[10px] leading-relaxed text-muted-foreground">
@@ -896,16 +914,34 @@ function DecorSection({
   const [localStep, setLocalStep] = useState(s ? String(s.step) : '1')
   const [localDigits, setLocalDigits] = useState(s ? String(s.minDigits) : '4')
   const enabled = !!s?.enabled
+  // 补零位数显示始终跟随“真实生效值”：
+  // 引擎在首次开启序列化时，可能按文本末尾数字位数改写 minDigits（如原文 “001”→3），
+  // 若 UI 只靠本地 state 会与真实渲染位数脱节（框里显示 4 实际 3，用户以为没生效）。
+  // 这里：仅当用户正聚焦输入框时保留本地草稿，其余时刻跟随 serial.minDigits。
+  const digitsFocused = useRef(false)
+  useEffect(() => {
+    if (!digitsFocused.current) {
+      const nd = serial?.minDigits
+      if (typeof nd === 'number' && nd >= 1) setLocalDigits(String(nd))
+    }
+  }, [serial?.minDigits])
   const num = (v: string, def: number) => {
     const n = parseFloat(v)
     return Number.isFinite(n) && n >= 0 ? Math.round(n) : def
   }
-  const commitSerial = () => {
+  const clampDigits = (v: string) => Math.max(1, Math.min(9, num(v, 4)))
+  // ov：让某字段「实时键入即提交」时显式传最新 raw（本地 state 异步滞后，
+  // 直接读 localXxx 会拿到上一次旧值）。未传的字段回落到对应 localState
+  // （供其它字段失焦提交 / Switch 首次开启时用整套当前值）。
+  const commitSerial = (ov: { start?: string; step?: string; digits?: string } = {}) => {
+    const startStr = ov.start != null ? ov.start : localStart
+    const stepStr = ov.step != null ? ov.step : localStep
+    const digitsStr = ov.digits != null ? ov.digits : localDigits
     onSerialChange({
       enabled: true,
-      start: num(localStart, 1),
-      step: Math.max(1, num(localStep, 1)),
-      minDigits: Math.max(1, Math.min(9, num(localDigits, 4))),
+      start: Math.max(0, num(startStr, 0)),
+      step: Math.max(1, num(stepStr, 1)),
+      minDigits: clampDigits(digitsStr),
     })
   }
   return (
@@ -941,12 +977,7 @@ function DecorSection({
             checked={enabled}
             onCheckedChange={(v) => {
               if (v) {
-                onSerialChange({
-                  enabled: true,
-                  start: num(localStart, 1),
-                  step: Math.max(1, num(localStep, 1)),
-                  minDigits: Math.max(1, Math.min(9, num(localDigits, 4))),
-                })
+                commitSerial()
               } else {
                 onSerialChange(null)
               }
@@ -958,9 +989,15 @@ function DecorSection({
             <Field label="起始">
               <input
                 type="number"
+                min={0}
                 value={localStart}
-                onChange={(e) => setLocalStart(e.target.value)}
-                onBlur={commitSerial}
+                onChange={(e) => {
+                  const raw = e.target.value
+                  setLocalStart(raw)
+                  // 实时提交：键入即刷新首张预览序号，不必等失焦。
+                  if (/^\d+$/.test(raw)) commitSerial({ start: raw })
+                }}
+                onBlur={() => commitSerial({ start: localStart })}
                 className="h-7 w-full rounded border bg-background px-1.5 text-xs tabular-nums focus:outline-none"
               />
             </Field>
@@ -969,8 +1006,13 @@ function DecorSection({
                 type="number"
                 min={1}
                 value={localStep}
-                onChange={(e) => setLocalStep(e.target.value)}
-                onBlur={commitSerial}
+                onChange={(e) => {
+                  const raw = e.target.value
+                  setLocalStep(raw)
+                  // 实时提交：避免失焦依赖；首张预览不变，但引擎 step 已更新（批量打印递增幅度）。
+                  if (/^[1-9]\d*$/.test(raw)) commitSerial({ step: raw })
+                }}
+                onBlur={() => commitSerial({ step: localStep })}
                 className="h-7 w-full rounded border bg-background px-1.5 text-xs tabular-nums focus:outline-none"
               />
             </Field>
@@ -980,8 +1022,20 @@ function DecorSection({
                 min={1}
                 max={9}
                 value={localDigits}
-                onChange={(e) => setLocalDigits(e.target.value)}
-                onBlur={commitSerial}
+                onChange={(e) => {
+                  const raw = e.target.value
+                  setLocalDigits(raw)
+                  // 实时提交：键入即刷新画布（改 3→5 立刻变 00001），不必等失焦。
+                  // 仅当已是合法正整数才提交，避免清空/半输入中间态误触发（如清空变 4）。
+                  if (/^[1-9]\d*$/.test(raw)) commitSerial({ digits: raw })
+                }}
+                onFocus={() => {
+                  digitsFocused.current = true
+                }}
+                onBlur={() => {
+                  digitsFocused.current = false
+                  commitSerial({ digits: localDigits })
+                }}
                 className="h-7 w-full rounded border bg-background px-1.5 text-xs tabular-nums focus:outline-none"
               />
             </Field>
