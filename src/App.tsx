@@ -238,8 +238,32 @@ export default function App() {
     applyZoom(zz)
   }, [applyZoom, setPanView, panForCenteredPaper])
 
-  const zoomIn = useCallback(() => applyZoom(zoomRef.current * 1.25), [applyZoom])
-  const zoomOut = useCallback(() => applyZoom(zoomRef.current / 1.25), [applyZoom])
+  /**
+   * 以「当前视口中心」为锚点缩放：放大/缩小按钮应让画面中心保持不动，
+   * 而非像 applyZoom 那样固定 pan（那会锚定在左上角，导致画面整体漂移）。
+   * 公式与滚轮缩放同源：令视口中心处的逻辑坐标在缩放前后不动
+   *   pan' = c - (c - pan) * (z'/z)，其中 c = 视口中心屏幕坐标。
+   */
+  const zoomBy = useCallback(
+    (factor: number) => {
+      const ctrl = ctrlRef.current
+      if (!ctrl) return
+      const z = zoomRef.current
+      const zz = Math.min(6, Math.max(0.2, z * factor))
+      if (zz === z) return
+      const vp = ctrl.getViewportSize()
+      const cx = vp.width / 2
+      const cy = vp.height / 2
+      const pan = panRef.current
+      const nx = cx - (cx - pan.x) * (zz / z)
+      const ny = cy - (cy - pan.y) * (zz / z)
+      setView(zz, nx, ny)
+    },
+    [setView],
+  )
+
+  const zoomIn = useCallback(() => zoomBy(1.25), [zoomBy])
+  const zoomOut = useCallback(() => zoomBy(1 / 1.25), [zoomBy])
 
   // 滚轮缩放 + 窗口尺寸变化自动适配
   useEffect(() => {
