@@ -14,23 +14,12 @@ function download(dataUrlOrBlob: Blob | string, filename: string) {
   if (typeof dataUrlOrBlob !== 'string') setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
-/** 画布 → 高清 PNG dataURL（2 倍倍率） */
+/** 画布 → 高清 PNG dataURL(委托给 CanvasController,内部临时切回工作区坐标系导出,不受屏幕缩放/视口影响) */
 export function canvasToHighResDataUrl(
   controller: CanvasController,
   scale = 2,
 ): string {
-  const el = controller.canvas.getElement() as HTMLCanvasElement
-  const paper = controller.getPaperBoundsPx()
-  const out = document.createElement('canvas')
-  // 裁到标签区域：忽略工作区灰色背景和纸外暂存对象
-  out.width = paper.width * scale
-  out.height = paper.height * scale
-  const ctx = out.getContext('2d')!
-  ctx.scale(scale, scale)
-  ctx.fillStyle = '#ffffff'
-  ctx.fillRect(0, 0, paper.width, paper.height)
-  ctx.drawImage(el, paper.left, paper.top, paper.width, paper.height, 0, 0, paper.width, paper.height)
-  return out.toDataURL('image/png')
+  return controller.toPaperDataUrl(scale)
 }
 
 export function exportJson(

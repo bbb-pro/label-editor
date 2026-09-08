@@ -106,6 +106,8 @@ export default function App() {
     })
     ctrlRef.current = ctrl
     if (import.meta.env.DEV) (window as unknown as { __appCtrl?: CanvasController }).__appCtrl = ctrl
+    // 把 canvas 设为视口大小(替代旧方案"整张工作区 + CSS 缩放");缩放/平移改由 fabric viewportTransform 承担
+    ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
     setObjectCount(0)
     setObjectCount(0)
     setObjectCount(0)
@@ -114,12 +116,8 @@ export default function App() {
     const ctr = stage.querySelector<HTMLElement>('.canvas-container')
     if (ctr) {
       canvasWrapRef.current = ctr
-      ctr.style.transformOrigin = 'center center'
-      // 关键：禁止 flex 收缩。容器是 stage 的 flex 子项，默认 flex-shrink:1 会把
-      // 工作区宽度（远大于视口）压缩成视口宽度，导致 canvas 溢出到居中盒子的右侧、
-      // transform-origin 也变成压缩盒的中心 —— 表现为标签整体偏右、缩放不以光标为中心。
-      ctr.style.flexShrink = '0'
-      ctr.style.flexGrow = '0'
+      // canvas 现在就是视口大小,flex 不会压缩它;移除旧的 CSS 缩放干预
+      ctr.style.transform = 'none'
     }
     zoomTo100() // 首次打开也默认显示 100% 实际大小
 
@@ -150,8 +148,9 @@ export default function App() {
 
   // ── 视口缩放 + 平移（CSS transform，保持 mm↔px 恒等）────
   const applyView = useCallback((zz: number, px: number, py: number) => {
-    const wrap = canvasWrapRef.current
-    if (wrap) wrap.style.transform = `translate(${px}px, ${py}px) scale(${zz})`
+    const ctrl = ctrlRef.current
+    // 改用 fabric 原生 viewportTransform:矢量重绘,放大不再糊
+    if (ctrl) ctrl.applyViewportTransform(zz, px, py)
   }, [])
 
   const applyZoom = useCallback(
@@ -193,9 +192,10 @@ export default function App() {
   const panForCenteredPaper = useCallback((zz: number) => {
     const ctrl = ctrlRef.current
     if (!ctrl) return { x: 0, y: 0 }
-    const ws = ctrl.getWorkspaceSizePx()
+    const vp = ctrl.getViewportSize()
     const pc = ctrl.paperCenter()
-    return { x: (ws.width / 2 - pc.x) * zz, y: (ws.height / 2 - pc.y) * zz }
+    // 视口中心对齐纸心:screen = pc*z + pan → pan = vCenter - pc*z
+    return { x: vp.width / 2 - pc.x * zz, y: vp.height / 2 - pc.y * zz }
   }, [])
 
   /** 回到 100%（实际大小，1px=1px）：新建/导入标签的默认视图 */
@@ -234,9 +234,9 @@ export default function App() {
       if (zz === z) return
       // 以光标为锚点缩放：光标下的工作区坐标在缩放前后保持不动
       const rect = stage.getBoundingClientRect()
-      // 光标相对 stage 中心的偏移
-      const dx = e.clientX - rect.left - rect.width / 2
-      const dy = e.clientY - rect.top - rect.height / 2
+      // 光标相对视口左上角的偏移(视口变换原点 = 视口左上角)
+      const dx = e.clientX - rect.left
+      const dy = e.clientY - rect.top
       const pan = panRef.current
       const nx = dx - (dx - pan.x) * (zz / z)
       const ny = dy - (dy - pan.y) * (zz / z)
@@ -245,6 +245,8 @@ export default function App() {
     stage.addEventListener('wheel', onWheel, { passive: false })
     const mountedAt = Date.now()
     const ro = new ResizeObserver(() => {
+      const ctrl = ctrlRef.current
+      if (ctrl) ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
       // 初始挂载/刷新后的一小段时间内容器会因字体加载等发生多次 reflow，
       // 若此时自动 fit 会覆盖掉“首开/新建”设置的 100%。首段宽限期内忽略。
       if (Date.now() - mountedAt < 700) return

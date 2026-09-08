@@ -159,6 +159,13 @@ export class CanvasController {
   /** 进入编辑瞬间文本框显示内容（判断用户是否真的改动，避免误触破坏动态字段） */
   private _inlineStartText = ''
 
+  /** 视口变换:z 缩放 + 屏幕平移(px)。替代 CSS transform 实现矢量重绘缩放,放大不再糊 */
+  private vptZoom = 1
+  private vptPan = { x: 0, y: 0 }
+  /** 视口(可见区域)像素尺寸,由 App 在 mount/resize 时设置 */
+  private viewW = 800
+  private viewH = 600
+
   constructor(canvasEl: HTMLCanvasElement, paper: PaperSize, events: ControllerEvents) {
     this.events = events
     this.paperPxW = mmToPx(paper.widthMm)
@@ -169,15 +176,17 @@ export class CanvasController {
     this.resizeWorkspace()
 
     this.canvas = new fabric.Canvas(canvasEl, {
-      width: this.workspaceW,
-      height: this.workspaceH,
+      // 初始占位尺寸;App 在 mount 后调 setViewportSize 把 canvas 设为视口大小。
+      // 缩放/平移改用 fabric 原生 viewportTransform(矢量重绘),不再用 CSS transform 拉伸位图。
+      width: 800,
+      height: 600,
       backgroundColor: '#ffffff',
       selectionColor: 'rgba(59,130,246,0.15)',
       selectionBorderColor: '#3b82f6',
       selectionLineWidth: 1.2,
       preserveObjectStacking: true,
+      enableRetinaScaling: true,
     })
-    this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
     // 画布背景 = 标签外的工作区底色；标签"纸卡"用一张白底矩形覆盖在中心
     this.canvas.backgroundColor = '#e2e8f0'
 
@@ -844,13 +853,12 @@ export class CanvasController {
     this.events.onDirty()
   }
 
-  /** 重新计算工作区尺寸 = 标签 + 四周留白，并把 setDimensions 应用到画布 */
+  /** 重新计算工作区尺寸 = 标签 + 四周留白(逻辑尺寸,canvas 实际尺寸由 setViewportSize 控制) */
   private resizeWorkspace() {
     this.workspaceW = this.paperPxW + this.paperOffsetX * 2
     this.workspaceH = this.paperPxH + this.paperOffsetY * 2
-    if (this.canvas) {
-      this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
-    }
+    // canvas 尺寸 = 视口(由 setViewportSize 控制),不再随工作区增长;
+    // 工作区仅作为逻辑坐标空间,显示缩放由 viewportTransform 承担。
   }
 
   /**
@@ -863,7 +871,7 @@ export class CanvasController {
     if (side === 'right' || side === 'bottom') {
       if (side === 'right') this.workspaceW += delta
       else this.workspaceH += delta
-      this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
+      // canvas 尺寸 = 视口,不随工作区增长
       return
     }
     // 左/上扩张：整体平移，保持视觉不变
@@ -873,7 +881,6 @@ export class CanvasController {
     this.paperOffsetY += dy
     if (side === 'left') this.workspaceW += delta
     else this.workspaceH += delta
-    this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
     this._suppressDirty = true
     for (const o of this.canvas.getObjects()) {
       o.set({ left: (o.left ?? 0) + dx, top: (o.top ?? 0) + dy })
@@ -971,6 +978,30 @@ export class CanvasController {
     // 视图适配按"标签"大小计算（让标签铺满视口）；画布 DOM 是更大的工作区
     return { w: this.paperPxW, h: this.paperPxH }
   }
+
+  /** 设置可见视口尺寸(屏幕像素)。App 在 mount 与窗口 resize 时调用 */
+  setViewportSize(w: number, h: number) {
+    this.viewW = Math.max(1, w)
+    this.viewH = Math.max(1, h)
+    this.canvas.setDimensions({ width: this.viewW, height: this.viewH })
+    this.canvas.calcOffset()
+    this.applyViewportTransform(this.vptZoom, this.vptPan.x, this.vptPan.y)
+  }
+
+  /** 应用视口变换:屏幕像素 = 工作区坐标 * z + pan */
+  applyViewportTransform(z: number, px: number, py: number) {
+    this.vptZoom = z
+    this.vptPan = { x: px, y: py }
+    this.canvas.setViewportTransform([z, 0, 0, z, px, py])
+    this.canvas.requestRenderAll()
+  }
+
+  getViewportSize(): { width: number; height: number } {
+    return { width: this.viewW, height: this.viewH }
+  }
+
+  getZoomValue(): number { return this.vptZoom }
+  getPanValue(): { x: number; y: number } { return { ...this.vptPan } }
 
   /** 标签中心在工作区中的画布坐标(像素) */
   paperCenter(): { x: number; y: number } {
@@ -1668,7 +1699,48 @@ export class CanvasController {
 
   // ── 序列化 / 导入导出 ───────────────────────────────────
   toJSON(): Record<string, unknown> {
-    return this.canvas.toJSON()
+    // 序列化时剔除 viewportTransform,避免把屏幕缩放/平移写进模板,导入后视图由 App 重新设定
+    const data = this.canvas.toJSON() as Record<string, unknown>
+    delete (data as { viewportTransform?: unknown }).viewportTransform
+    return data
+  }
+
+  /**
+   * 以工作区坐标系把"纸区域"导出为高清 PNG dataURL。
+   * 导出时临时把画布切回工作区尺寸 + identity 视口变换(绕开屏幕缩放/视口裁剪),
+   * 导出后恢复当前视口。供栅格 PNG / 打印 / 批量序列化截图复用。
+   */
+  toPaperDataUrl(scale = 3): string {
+    const paper = this.getPaperBoundsPx()
+    const prevVpt = (this.canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]).slice() as unknown as number[]
+    const prevW = this.viewW
+    const prevH = this.viewH
+    const prevSel = this.canvas.getActiveObject()
+    this.canvas.discardActiveObject()
+    this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+    this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
+    this.canvas.renderAll()
+    const el = this.canvas.getElement() as HTMLCanvasElement
+    const DPR = el.width / Math.max(1, this.workspaceW)
+    const out = document.createElement('canvas')
+    out.width = Math.round(paper.width * scale)
+    out.height = Math.round(paper.height * scale)
+    const ctx = out.getContext('2d')!
+    ctx.scale(scale, scale)
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, paper.width, paper.height)
+    ctx.drawImage(
+      el,
+      paper.left * DPR, paper.top * DPR, paper.width * DPR, paper.height * DPR,
+      0, 0, paper.width, paper.height,
+    )
+    const url = out.toDataURL('image/png')
+    // 恢复视口
+    this.canvas.setDimensions({ width: prevW, height: prevH })
+    this.canvas.setViewportTransform(prevVpt as unknown as [number, number, number, number, number, number])
+    if (prevSel) this.canvas.setActiveObject(prevSel)
+    this.canvas.requestRenderAll()
+    return url
   }
 
   /** 单个对象：从源 JSON 恢复自定义字段并补打补丁（供 loadFromJSON 顶层与组内递归共用） */
@@ -1740,6 +1812,8 @@ export class CanvasController {
       this.recreatePaperRect()
       for (const o of this.canvas.getObjects()) if (!(o as { excludeFromExport?: boolean }).excludeFromExport) this.updateOutsidePaperVisual(o)
       this.refreshAllContent()
+      // 导入后保持当前视口(避免模板里残留的视图变换影响显示)
+      this.canvas.setViewportTransform([this.vptZoom, 0, 0, this.vptZoom, this.vptPan.x, this.vptPan.y])
       this.canvas.requestRenderAll()
       if (this.previewRow) this.setPreviewRow(this.previewRow)
       this._suppressDirty = false
