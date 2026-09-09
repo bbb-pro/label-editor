@@ -23,6 +23,8 @@ interface CustomFields {
   id?: string
   /** 用户可读名称，用于跨对象引用与图层辨识 */
   _name?: string
+  /** 是否被锁定（锁定后不可拖动/缩放/旋转，但仍可点选以便解锁） */
+  _locked?: boolean
   kind?: ElementKind
   _barcodeRaw?: string
   _barcodeType?: BarcodeType
@@ -802,9 +804,10 @@ export class CanvasController {
     this.events.onActiveChange({
       id: c.id ?? '',
       name: c._name ?? '',
+      locked: !!c._locked,
       kind,
-      x: roundMm(pxToMm(obj.left ?? 0)),
-      y: roundMm(pxToMm(obj.top ?? 0)),
+      x: roundMm(pxToMm((obj.left ?? 0) - this.paperOffsetX)),
+      y: roundMm(pxToMm((obj.top ?? 0) - this.paperOffsetY)),
       width: roundMm(pxToMm(obj.getScaledWidth() ?? obj.width ?? 0)),
       height: roundMm(pxToMm(obj.getScaledHeight() ?? obj.height ?? 0)),
       angle: Math.round(obj.angle ?? 0),
@@ -1056,8 +1059,8 @@ export class CanvasController {
     if (!obj) return
     const c = cf(obj)
     const isText = c.kind === 'text'
-    if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) })
-    if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) })
+    if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) + this.paperOffsetX })
+    if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) + this.paperOffsetY })
     if (patch.angle !== undefined) obj.set({ angle: patch.angle })
     if (patch.width !== undefined) {
       if (isText && obj instanceof fabric.Textbox) {
@@ -1217,7 +1220,7 @@ export class CanvasController {
       strokeWidth: 1.5,
       // 描边不随整体缩放变粗/变细（拉大缩小线条粗细恒定）
       strokeUniform: true,
-      rx: mmToPx(0.6),
+      rx: 0, // 默认直角（0 圆角）
     })
     this.finalizeObject(rect, 'rect', null)
   }
@@ -1497,6 +1500,7 @@ export class CanvasController {
     nc.id = oc.id
     nc.kind = oc.kind
     nc._name = oc._name
+    nc._locked = oc._locked
     nc._barcodeRaw = oc._barcodeRaw
     nc._barcodeType = oc._barcodeType
     nc._barcodeTargetMm = oc._barcodeTargetMm
@@ -1509,6 +1513,7 @@ export class CanvasController {
     this._suppressDirty = true
     this.canvas.remove(old)
     this.patchSerialize(group)
+    this.applyLockState(group)
     this.canvas.add(group)
     this._suppressDirty = false
     if (wasActive) this.canvas.setActiveObject(group)
@@ -1540,8 +1545,11 @@ export class CanvasController {
     const c = cf(obj)
     if (!isContentKind(c.kind)) return
     const trimmed = name.trim()
-    if (!trimmed || trimmed === c._name) return
-    if (!this.isNameAvailable(trimmed, obj)) {
+    if (trimmed === c._name) return
+    if (trimmed === '') {
+      // 允许清空名称，便于重新输入（不会被自动命名覆盖）
+      c._name = ''
+    } else if (!this.isNameAvailable(trimmed, obj)) {
       // 简单去重兜底：追加序号避免静默撞名
       let n = 2
       let candidate = `${trimmed}${n}`
@@ -1554,6 +1562,48 @@ export class CanvasController {
     this.events.onDirty()
     this.emitActive()
     this.refreshDependents(obj)
+  }
+
+  /** 把锁定状态映射到 fabric 交互锁：锁定后不可移动/缩放/旋转，但保留可点选（便于解锁） */
+  private applyLockState(o: fabric.Object) {
+    const locked = !!cf(o)._locked
+    o.set({
+      lockMovementX: locked,
+      lockMovementY: locked,
+      lockScalingX: locked,
+      lockScalingY: locked,
+      lockRotation: locked,
+      hasControls: !locked,
+      hoverCursor: locked ? 'not-allowed' : 'move',
+    } as never)
+  }
+
+  /** 锁定/解锁当前选中对象（锁定后不可拖动/缩放/旋转，但仍可点选以解锁） */
+  setActiveLocked(locked: boolean) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    cf(obj)._locked = locked
+    this.applyLockState(obj)
+    this.patchSerialize(obj)
+    this.emitActive(obj)
+    this.events.onDirty()
+  }
+
+  /** 解锁画布上全部对象 */
+  unlockAll() {
+    let changed = false
+    for (const o of this.flattenTopLevel()) {
+      if (cf(o)._locked) {
+        cf(o)._locked = false
+        this.applyLockState(o)
+        this.patchSerialize(o)
+        changed = true
+      }
+    }
+    if (changed) {
+      this.emitActive()
+      this.events.onDirty()
+    }
   }
 
   /** 设置当前条码对象的渲染设置并重绘 */
@@ -1785,8 +1835,9 @@ export class CanvasController {
     if (kind === 'text' && text != null) c.originalText = text
     if (isBarcodeKind(kind) && text != null) c._barcodeRaw = text
     // 默认命名；加载模板时若已有名称则沿用（见 loadFromJSON）
-    if (!c._name) c._name = defaultName(kind)
+    if (c._name === undefined) c._name = defaultName(kind)
     this.patchSerialize(obj)
+    this.applyLockState(obj)
     this.canvas.add(obj)
     this.canvas.setActiveObject(obj)
     this.canvas.requestRenderAll()
@@ -1802,6 +1853,7 @@ export class CanvasController {
       props.id = c.id
       props.kind = c.kind
       props._name = c._name
+      if (c._locked) props._locked = true
       if (isBarcodeKind(c.kind)) {
         props._barcodeRaw = c._barcodeRaw
         props._barcodeType = c._barcodeType
@@ -1960,6 +2012,7 @@ export class CanvasController {
     if (s.id) c.id = String(s.id)
     if (s.kind) c.kind = s.kind as ElementKind
     if (typeof s._name === 'string' && s._name) c._name = s._name
+    if (s._locked) c._locked = true
     if (typeof s._barcodeRaw === 'string') {
       c._barcodeRaw = s._barcodeRaw
       c._barcodeType = (s._barcodeType as BarcodeType) ?? 'code128'
@@ -1984,6 +2037,8 @@ export class CanvasController {
       // fabric 重建 Polygon/Ellipse/Triangle 后重新补一个圆角为 0 的兜底
     }
     if (!c._name) c._name = defaultName((c.kind ?? 'text') as ElementKind) // 兼容无命名的旧模板
+    // 还原锁定状态（载入模板后让锁定对象真正不可拖动/缩放）
+    this.applyLockState(o)
     // 旧模板/历史对象：确保描边不随缩放变粗细
     if (isStrokeKind(c.kind)) {
       o.set({ strokeUniform: true } as never)

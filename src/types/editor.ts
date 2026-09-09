@@ -36,6 +36,8 @@ export interface ActiveObject {
   id: string
   /** 用户命名（用于跨对象引用） */
   name: string
+  /** 是否被锁定（锁定后不可拖动/缩放/旋转，但仍可点选以解锁） */
+  locked: boolean
   kind: ElementKind
   x: number
   y: number

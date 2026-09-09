@@ -36,6 +36,8 @@ import {
   Tag as TagIcon,
   ScanText,
   ShieldCheck,
+  Lock,
+  Unlock,
   ChevronDown,
   Hash,
   Copy,
@@ -62,6 +64,8 @@ interface PropertyPanelProps {
   onTextStyleChange: (patch: Partial<TextStyle>) => void
   onBarcodeTypeChange: (t: BarcodeType) => void
   onNameChange: (name: string) => void
+  /** 锁定/解锁当前选中对象 */
+  onToggleLock: () => void
   onBarcodeSettingsChange: (patch: Partial<BarcodeRenderSettings>) => void
   /** 条码：人读文字与条区距离(mm) */
   onBarcodeTextOffsetChange?: (mm: number) => void
@@ -141,6 +145,7 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onTextStyleChange={props.onTextStyleChange}
           onBarcodeTypeChange={props.onBarcodeTypeChange}
           onNameChange={props.onNameChange}
+          onToggleLock={props.onToggleLock}
           onBarcodeSettingsChange={props.onBarcodeSettingsChange}
           onBarcodeTextOffsetChange={props.onBarcodeTextOffsetChange}
           onContentDecorChange={props.onContentDecorChange}
@@ -332,6 +337,7 @@ function SelectedObjectPanel({
   onTextStyleChange,
   onBarcodeTypeChange,
   onNameChange,
+  onToggleLock,
   onBarcodeSettingsChange,
   onBarcodeTextOffsetChange,
   onContentDecorChange,
@@ -387,6 +393,15 @@ function SelectedObjectPanel({
             </span>
           )}
           <div className="flex-1" />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={onToggleLock}
+            title={active.locked ? '已锁定（点此解锁）' : '锁定（防止误拖动/缩放）'}
+            className={active.locked ? 'text-amber-600 hover:text-amber-600' : ''}
+          >
+            {active.locked ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+          </Button>
           <Button variant="ghost" size="icon-sm" onClick={onDuplicate} title="复制">
             <Copy className="h-4 w-4" />
           </Button>
@@ -479,7 +494,7 @@ function SelectedObjectPanel({
             <div className="mt-2">
               <MmField
                 label="圆角半径 (mm)"
-                value={active.cornerRadiusMm ?? 0.6}
+                value={active.cornerRadiusMm ?? 0}
                 step={0.5}
                 onChange={(v) => onCornerRadiusChange(v)}
               />
@@ -586,7 +601,9 @@ function SelectedObjectPanel({
   )
 }
 
-/** 对象名称输入：作为跨对象引用标识（文本/条码） */
+/** 对象名称输入：作为跨对象引用标识（文本/条码）。
+ *  用「本地输入态 + 聚焦守卫」：输入过程中不被父级重渲染覆盖，可彻底删空重输；
+ *  仅在失焦或外部值变化（切对象）时回同步，避免受控输入把已删内容回写回来。 */
 function NameField({
   value,
   onChange,
@@ -596,7 +613,12 @@ function NameField({
   onChange: (name: string) => void
   headers: string[]
 }) {
-  const bound = value && headers.includes(value)
+  const [text, setText] = useState(value)
+  const focusedRef = useRef(false)
+  useEffect(() => {
+    if (!focusedRef.current) setText(value)
+  }, [value])
+  const bound = text.trim() && headers.includes(text.trim())
   return (
     <div className="pt-2">
       <label className="flex items-center gap-1.5">
@@ -604,13 +626,23 @@ function NameField({
         <span className="text-[11px] text-muted-foreground">名称</span>
         {bound && (
           <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">
-            已关联列：{value}
+            已关联列：{text.trim()}
           </span>
         )}
       </label>
       <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        value={text}
+        onFocus={() => {
+          focusedRef.current = true
+        }}
+        onBlur={() => {
+          focusedRef.current = false
+          setText(value)
+        }}
+        onChange={(e) => {
+          setText(e.target.value)
+          onChange(e.target.value)
+        }}
         placeholder="如：商品名"
         className="mt-1 h-8 text-xs"
       />
@@ -618,7 +650,7 @@ function NameField({
         {headers.length > 0 ? (
           bound ? (
             <>
-              此文本框当前行将自动填充「<b className="font-mono">{value}</b>」列的数据。
+              此文本框当前行将自动填充「<b className="font-mono">{text.trim()}</b>」列的数据。
             </>
           ) : (
             <>

@@ -37,6 +37,8 @@ import {
   SendToBack,
   ArrowUp,
   ArrowDown,
+  Magnet,
+  Unlock,
 } from 'lucide-react'
 
 /** 批量渲染默认份数 */
@@ -55,6 +57,9 @@ export default function App() {
   const [paper, setPaper] = useState<PaperSize>(DEFAULT_PAPER)
   const [tool, setTool] = useState<ToolType | null>(null)
   const [active, setActive] = useState<ActiveObject | null>(null)
+  // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态
+  const activeRef = useRef<ActiveObject | null>(null)
+  activeRef.current = active
   const [zoom, setZoom] = useState(1)
   const [objectCount, setObjectCount] = useState(0)
   const [usedVariables, setUsedVariables] = useState<string[]>([])
@@ -76,6 +81,8 @@ export default function App() {
   // ── 响应式布局 / 手抓平移 / 移动端属性抽屉 ─────────────
   const isCompact = useIsCompact()
   const [hand, setHand] = useState(false)
+  /** 拖动/缩放吸附开关（默认开启） */
+  const [snapEnabled, setSnapEnabled] = useState(true)
   const [sheetOpen, setSheetOpen] = useState(false)
   const panRef = useRef({ x: 0, y: 0 })
 
@@ -622,6 +629,22 @@ export default function App() {
     ctrl.beginFieldEdit()
     ctrl.setActiveName(name)
   }, [])
+
+  // 锁定/解锁当前选中对象（按钮文案取决于当前锁定态）
+  const onToggleLock = useCallback(() => {
+    const ctrl = ctrlRef.current
+    if (!ctrl || !activeRef.current) return
+    ctrl.beginFieldEdit()
+    ctrl.setActiveLocked(!activeRef.current.locked)
+  }, [])
+
+  // 解锁画布上全部对象
+  const onUnlockAll = useCallback(() => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    ctrl.unlockAll()
+  }, [])
   const onBarcodeSettingsChange = useCallback((patch: Partial<BarcodeRenderSettings>) => {
     const ctrl = ctrlRef.current
     if (!ctrl) return
@@ -1073,6 +1096,32 @@ export default function App() {
             >
               1:1
             </button>
+            <span className="mx-1 h-7 w-px shrink-0 self-center bg-slate-200" />
+            <button
+              type="button"
+              onClick={() => {
+                const next = !snapEnabled
+                setSnapEnabled(next)
+                ctrlRef.current?.setSnapEnabled(next)
+              }}
+              title={snapEnabled ? '吸附已开启（拖动/缩放时自动对齐）' : '吸附已关闭'}
+              className={
+                'flex h-9 w-9 items-center justify-center rounded-md transition-colors ' +
+                (snapEnabled
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                  : 'text-muted-foreground hover:bg-accent')
+              }
+            >
+              <Magnet className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={onUnlockAll}
+              title="解锁全部对象"
+              className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
+            >
+              <Unlock className="h-4 w-4" />
+            </button>
           </div>
 
           {/* 移动端浮层：手动打开属性抽屉 */}
@@ -1187,6 +1236,7 @@ export default function App() {
             onTextStyleChange={onTextStyleChange}
             onBarcodeTypeChange={onBarcodeTypeChange}
             onNameChange={onNameChange}
+            onToggleLock={onToggleLock}
             onBarcodeSettingsChange={onBarcodeSettingsChange}
             onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
             onContentDecorChange={onContentDecorChange}
@@ -1239,6 +1289,7 @@ export default function App() {
                 onTextStyleChange={onTextStyleChange}
                 onBarcodeTypeChange={onBarcodeTypeChange}
                 onNameChange={onNameChange}
+                onToggleLock={onToggleLock}
                 onBarcodeSettingsChange={onBarcodeSettingsChange}
             onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
                 onContentDecorChange={onContentDecorChange}
