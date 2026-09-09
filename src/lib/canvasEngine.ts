@@ -281,10 +281,10 @@ export class CanvasController {
       this.events.onActiveChange(null)
       this.events.onSelection?.({ count: 0, isGroup: false, isBarcodeGroup: false })
     })
-    // 双击编组 → 解组（编辑体验贴近 PS/AI）；条码组保持原子对象，不解组
+    // 双击编组 → 解组（编辑体验贴近 PS/AI）；条码组 / 素材组是原子对象，不解组
     this.canvas.on('mouse:dblclick', (opt) => {
       const t = opt.target
-      if (t && this.isGroup(t) && cf(t).kind !== 'barcode') this.ungroupSelection()
+      if (t && this.isGroup(t) && !isAtomicGroupKind(cf(t).kind)) this.ungroupSelection()
     })
     this.canvas.on('object:moving', (e) => {
       this.emitActiveThrottled()
@@ -784,19 +784,21 @@ export class CanvasController {
     }
     const isGroupSel = this.isGroup(obj)
     const isBarcodeGroup = isGroupSel && cf(obj).kind === 'barcode'
+    // 条码组 / SVG 素材组 都是 fabric.Group，但它们是「原子可编辑对象」，
+    // 必须像单对象一样展示各自的属性面板（否则会被当成用户编组而清空面板）。
+    const isAtomicGroup = isGroupSel && isAtomicGroupKind(cf(obj).kind)
     const sel = obj as unknown as { getObjects?: () => fabric.Object[] }
     const multi = typeof sel.getObjects === 'function' && (sel.getObjects() ?? []).length > 0
     // 容器分支：真实编组（用户编组）/ 多选(ActiveSelection) 进入“整体操作”状态，不展示单对象属性面板。
-    // 注意：条码组虽然是 fabric.Group，但它是一个“原子可编辑对象”，要像单对象一样展示条码属性面板，
-    // 因此 isBarcodeGroup 时不走此分支。
-    if (!isBarcodeGroup && (isGroupSel || multi)) {
+    if (!isAtomicGroup && (isGroupSel || multi)) {
       const cnt = isGroupSel ? 1 : (sel.getObjects?.().length ?? 0)
       this.events.onSelection?.({ count: cnt, isGroup: isGroupSel, isBarcodeGroup: false })
       this.events.onActiveChange(null)
       return
     }
     // 单对象 / 条码组：作为单个可编辑对象处理（条码组走 isBarcodeKind 分支展示条码属性）
-    this.events.onSelection?.({ count: 1, isGroup: isGroupSel, isBarcodeGroup })
+    // isGroup 语义=「用户编组出来的、可解组的容器」；条码组/素材组是原子对象，不可解组
+    this.events.onSelection?.({ count: 1, isGroup: isGroupSel && !isAtomicGroup, isBarcodeGroup })
     const c = cf(obj)
     const kind = (c.kind ?? 'text') as ElementKind
     let text: string | null = null
@@ -1317,11 +1319,15 @@ export class CanvasController {
     this.events.onDirty()
   }
 
-  /** 设置选中闭合形状/直线的描边粗细（px，恒等不随缩放） */
+  /** 设置选中闭合形状/直线的描边粗细（px，恒等不随缩放）；SVG 线稿素材走素材专用分支 */
   setActiveStrokeWidth(widthPx: number) {
     const obj = this.getActiveObject()
     if (!obj) return
     const c = cf(obj)
+    if (c.kind === 'svg') {
+      this.setActiveAssetStrokeWidth(widthPx)
+      return
+    }
     if (!isStrokeKind(c.kind)) return
     const w = Math.max(0, Math.min(100, Math.round(widthPx * 10) / 10))
     obj.set({ strokeWidth: w, strokeUniform: true })
@@ -2173,6 +2179,29 @@ export class CanvasController {
     group.set({ left: this.paperCenter().x - w / 2, top: this.paperCenter().y - h / 2 })
 
     this.finalizeObject(group, 'svg', null)
+    return true
+  }
+
+  /**
+   * 修改当前 SVG 线稿素材的线条粗细（px）。
+   * 值直接写进 viewBox 坐标（与 PDF 矢量导出的 stroke-width 同一套单位），
+   * 画布上的视觉粗细 = 该值 × 素材缩放比 —— 放大图标时线条跟着变粗，与导出一致。
+   */
+  setActiveAssetStrokeWidth(widthPx: number): boolean {
+    const obj = this.getActiveObject()
+    if (!obj) return false
+    const c = cf(obj)
+    if (c.kind !== 'svg' || !c._svgIsStroke) return false
+    const w = Math.max(0.1, Math.min(20, Math.round(widthPx * 10) / 10))
+    c._svgStrokeWidth = w
+    const kids = (obj as fabric.Group).getObjects?.() ?? []
+    for (const kid of kids) {
+      if (!kid.stroke || kid.stroke === 'none') continue
+      kid.set({ strokeWidth: w })
+    }
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    this.emitActive(obj)
     return true
   }
 

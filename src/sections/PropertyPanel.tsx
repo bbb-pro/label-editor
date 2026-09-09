@@ -447,14 +447,32 @@ function SelectedObjectPanel({
       {isSvgAsset && (
         <Section title="外观">
           {active.strokeColor ? (
-            <ColorField
-              label="图标颜色"
-              color={active.strokeColor}
-              onPick={(c) => onStrokeColorChange(c ?? '#000000')}
-            />
+            <>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <ColorField
+                    label="图标颜色"
+                    color={active.strokeColor}
+                    onPick={(c) => onStrokeColorChange(c ?? '#000000')}
+                  />
+                </div>
+                <div className="flex-1">
+                  <MmField
+                    label="线条粗细"
+                    value={active.strokeWidth ?? 2}
+                    suffix="px"
+                    step={0.25}
+                    onChange={(v) => onStrokeWidthChange(v)}
+                  />
+                </div>
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+                线稿图标可改色与粗细；放大时线条会按比例一起变粗，打印效果与屏幕一致。
+              </p>
+            </>
           ) : (
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              彩色素材（如表情）保留原印制色，不支持改色。
+              彩色素材（如表情）保留原印制色，不支持改色；可用下方位置与尺寸调整大小。
             </p>
           )}
         </Section>
