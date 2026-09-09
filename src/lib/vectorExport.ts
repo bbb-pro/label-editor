@@ -6,6 +6,7 @@
 // - 文本：逐行重建（拆 \n 与按盒宽折行），支持对齐/行高/字距/粗体(近似加粗)。
 // - 形状：矩形(含圆角)/椭圆/三角形/菱形/五角星/直线全部走矢量；闭合多边形用 doc.lines。
 // - 条码/图片：以位图嵌入（条码为高对比模块，位图在印刷/放大时足够清晰）。
+// - SVG 素材：整段 SVG 交给 svg2pdf 重绘为矢量路径，放大印刷不失真。
 // - 旋转：文本用 jsPDF text({angle})，图形绕中心旋转后描点。
 import jsPDF from 'jspdf'
 import { Font } from 'fonteditor-core'
@@ -16,6 +17,8 @@ import { pxToPt } from '@/lib/textStyles'
 import { type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import type { fabric } from 'fabric'
+// 引入后会给 jsPDF 原型挂上 .svg()，用于把完整 SVG 绘制为矢量路径
+import 'svg2pdf.js'
 
 const FONT_ALIAS = 'SimHeiPDF'
 const FONT_URL = () => `${import.meta.env.BASE_URL}fonts/simhei.ttf`
@@ -49,10 +52,12 @@ function flattenLeaves(ctrl: CanvasController): Leaf[] {
       if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
       const kind = (o as unknown as { kind?: string }).kind
       const children = (o as unknown as { _objects?: fabric.Object[] })._objects
-      // 条码是 Group，但它是原子内容对象，必须整体交给 drawBarcodeVector。
-      // 若穿透成子矩形：子矩形是 group 局部坐标 → isObjectInPaper 误判纸外 → 条码在 PDF 里消失。
+      // 条码、SVG 素材都是 Group 形态的「原子对象」，必须整体交给各自的绘制分支。
+      // 若穿透成子矩形/子路径：①子对象是 group 局部坐标 → isObjectInPaper 误判纸外而丢失；
+      // ②子 path 没有对应绘制分支 → 直接导出为空。
       const isBarcode = kind === 'barcode'
-      if (!isBarcode && o.type === 'group' && Array.isArray(children)) {
+      const isAtomic = isBarcode || kind === 'svg'
+      if (!isAtomic && o.type === 'group' && Array.isArray(children)) {
         if (!insideGroup && !ctrl.isObjectInPaper(o)) continue
         walk(children, true)
         continue
@@ -442,6 +447,59 @@ function drawImageLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController, asBarcode: b
   doc.addImage(url, 'PNG', n(box.left), n(box.top), n(box.w), n(box.h), undefined, 'FAST')
 }
 
+/** 把 SVG 字符串解析为可用的 SVG 元素（svg2pdf 只接受元素不接受字符串） */
+function parseSvgElement(svg: string): SVGSVGElement | null {
+  try {
+    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml')
+    if (doc.getElementsByTagName('parsererror').length) return null
+    return doc.documentElement as unknown as SVGSVGElement
+  } catch {
+    return null
+  }
+}
+
+/** DOMMatrix → jsPDF Matrix（jsPDF 自有 Matrix 形状与 DOMMatrix 结构不兼容，仅取 a-f） */
+function toPdfMatrix(m: DOMMatrix): Parameters<jsPDF['setCurrentTransformationMatrix']>[0] {
+  return { a: m.a, b: m.b, c: m.c, d: m.d, e: m.e, f: m.f } as unknown as Parameters<
+    jsPDF['setCurrentTransformationMatrix']
+  >[0]
+}
+
+/**
+ * SVG 素材（图标 / 表情）→ 矢量嵌入。
+ * 与图片不同：素材在画面上由多个 path 组成，这里按缓存的整段 SVG 交给 svg2pdf 重绘，
+ * 得到真正的矢量路径，放大/印刷均不失真，且支持后续改色。
+ */
+async function drawSvgAssetLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
+  const data = ctrl.svgDataFor(o)
+  if (!data) return
+  const box = leafBox(o)
+  if (box.w <= 0 || box.h <= 0) return
+  const el = parseSvgElement(data.svg)
+  if (!el) return
+
+  const angle = box.angleDeg
+  let rotated = false
+  try {
+    if (angle) {
+      // 绕自身中心旋转：平移到中心 → 旋转 → 平移回去
+      const cx = box.left + box.w / 2
+      const cy = box.top + box.h / 2
+      const m = new DOMMatrix().translateSelf(cx, cy).rotateSelf(angle).translateSelf(-cx, -cy)
+      doc.setCurrentTransformationMatrix(toPdfMatrix(m))
+      rotated = true
+    }
+    await doc.svg(el, { x: n(box.left), y: n(box.top), width: n(box.w), height: n(box.h) })
+  } catch {
+    // 个别素材解析/重绘失败时静默跳过，不影响整页其余内容
+  } finally {
+    if (rotated) {
+      const reset = new DOMMatrix()
+      doc.setCurrentTransformationMatrix(toPdfMatrix(reset))
+    }
+  }
+}
+
 /** 条码 → 矢量：提取黑色矩形清单并逐块填充；可选人读文字用矢量字体画 */
 function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box) {
   const c = o as unknown as {
@@ -498,11 +556,15 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
 
 /* ── 分派：画一个叶子对象 ──────────────────────────── */
 
-function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
+async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
   const kind = (o as unknown as { kind?: string }).kind
   const type = o.type
   if (kind === 'text') {
     drawTextObject(doc, o, ctrl.contentStringFor(o))
+    return
+  }
+  if (kind === 'svg') {
+    await drawSvgAssetLeaf(doc, o, ctrl)
     return
   }
   if (kind === 'barcode') {
@@ -603,7 +665,7 @@ export async function exportVectorPdf(
       }
       if (rowMode) controller.setPreviewRow(rows![p])
       else if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
-      flattenLeaves(controller).forEach((o) => drawLeaf(doc, o, controller))
+      for (const o of flattenLeaves(controller)) await drawLeaf(doc, o, controller)
       onProgress?.(p + 1, pageCount)
     }
   } finally {

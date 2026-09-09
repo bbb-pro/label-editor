@@ -11,6 +11,7 @@ import {
   Diamond as DiamondIcon,
   Star as StarIcon,
   ImageUp,
+  Sparkles,
 } from 'lucide-react'
 import type { ToolType } from '@/types/template'
 import { cn } from '@/lib/utils'
@@ -19,6 +20,8 @@ interface ToolboxProps {
   tool: ToolType | null
   onToolChange: (t: ToolType) => void
   onPickImage: (file: File) => void
+  /** 打开素材库面板（本地 CC0 图标 / 表情） */
+  onOpenAssets: () => void
 }
 
 /** 形状子项（对应 App 里的 tool 分支） */
@@ -51,6 +54,7 @@ function ToolBtn({
   onClick,
   badge,
   btnRef,
+  triggerAttr,
 }: {
   label: string
   Icon: typeof Type
@@ -58,6 +62,8 @@ function ToolBtn({
   onClick: () => void
   badge?: string
   btnRef?: RefObject<HTMLButtonElement | null>
+  /** 透传到按钮根元素的自定义属性（如 data-assets-trigger） */
+  triggerAttr?: Record<string, string>
 }) {
   return (
     <button
@@ -65,6 +71,7 @@ function ToolBtn({
       title={label}
       ref={btnRef}
       onClick={onClick}
+      {...triggerAttr}
       className={cn(baseBtn(active), 'h-11')}
     >
       <Icon className="h-5 w-5" />
@@ -80,7 +87,7 @@ function ToolBtn({
 }
 
 export default function Toolbox(props: ToolboxProps) {
-  const { onToolChange, onPickImage } = props
+  const { onToolChange, onPickImage, onOpenAssets } = props
   const [open, setOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -141,6 +148,9 @@ export default function Toolbox(props: ToolboxProps) {
           btnRef={btnRef}
           onClick={openMenu}
         />
+
+        {/* 素材库：图标 / 表情 */}
+        <ToolBtn label="素材" Icon={Sparkles} onClick={onOpenAssets} triggerAttr={{ 'data-assets-trigger': '' }} />
 
         {/* 图片上传 */}
         <ToolBtn label="图片" Icon={ImageUp} onClick={() => fileRef.current?.click()} />

@@ -28,6 +28,7 @@ import {
   Diamond as DiamondIcon,
   Star as StarIcon,
   Shapes as ShapesIcon,
+  Sparkles as SparklesIcon,
   Bold,
   Italic,
   AlignLeft,
@@ -98,6 +99,7 @@ const kindMeta: Record<ElementKind, { label: string; Icon: typeof Layers; color:
   line: { label: '直线', Icon: MinusIcon, color: 'text-slate-600 bg-slate-100' },
   image: { label: '图片', Icon: ImageIcon, color: 'text-amber-600 bg-amber-50' },
   shape: { label: '形状', Icon: ShapesIcon, color: 'text-slate-600 bg-slate-100' },
+  svg: { label: '矢量素材', Icon: SparklesIcon, color: 'text-teal-600 bg-teal-50' },
 }
 
 /** 形状子类型的图标与中文名 */
@@ -356,6 +358,8 @@ function SelectedObjectPanel({
   const isText = active.kind === 'text'
   const isBarcode = active.kind === 'barcode'
   const isStroke = active.kind === 'rect' || active.kind === 'shape' || active.kind === 'line'
+  // 矢量素材：线稿类（图标）可改描边色；彩绘类（emoji）保持原色，故不显示改色控件
+  const isSvgAsset = active.kind === 'svg'
   const canEditContent = isText || isBarcode
   // 选中对象头部显示用：kind==='shape' 时展示具体形状（椭圆/三角…）
   const HeaderShapeIcon = active.kind === 'shape' ? (SHAPE_META[active.shapeType ?? 'ellipse'].Icon) : meta.Icon
@@ -439,6 +443,22 @@ function SelectedObjectPanel({
           onChange={(v) => onGeometry({ angle: v })}
         />
       </Section>
+
+      {isSvgAsset && (
+        <Section title="外观">
+          {active.strokeColor ? (
+            <ColorField
+              label="图标颜色"
+              color={active.strokeColor}
+              onPick={(c) => onStrokeColorChange(c ?? '#000000')}
+            />
+          ) : (
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              彩色素材（如表情）保留原印制色，不支持改色。
+            </p>
+          )}
+        </Section>
+      )}
 
       {isStroke && (
         <Section title={active.kind === 'line' ? '线条' : '外观'}>

@@ -55,12 +55,27 @@ interface CustomFields {
   _suffix?: string
   /** 内容对象：序列化配置（批量打印时 {{seq}} 逐张递增） */
   _serial?: SerialSpec
+  /** SVG 素材：viewBox，如 "0 0 24 24" 或 "0 0 36 36" */
+  _svgViewBox?: string
+  /** SVG 素材：内部片段（不含外层 <svg>），与 viewBox 一起可在导出时重绘为矢量 */
+  _svgInner?: string
+  /** SVG 素材：true=线稿（靠 stroke 上色，可改色）；false=彩图（如 emoji，保持原色） */
+  _svgIsStroke?: boolean
+  /** SVG 素材：当前线稿颜色（仅 _svgIsStroke 时有意义） */
+  _svgColor?: string
+  /** SVG 素材：线稿粗细（仅线稿时有意义） */
+  _svgStrokeWidth?: number
 }
 
 const isBarcodeKind = (k: ElementKind | undefined): boolean => k === 'barcode'
 const isContentKind = (k: ElementKind | undefined): boolean => k === 'text' || k === 'barcode'
 /** 是否有描边粗细（闭合形状 + 直线） */
 const isStrokeKind = (k: ElementKind | undefined): boolean => k === 'rect' || k === 'shape' || k === 'line'
+
+/** 「原子编组」：虽是 fabric.Group 但必须整体作为叶子处理，不可穿透成子图形。
+ *  - barcode：穿透后 refreshAllContent 遍历不到条码本身，数据源/序列化递增时不跟随；
+ *  - svg：素材由多个 path 组成，矢量导出按整段 SVG 重绘，拆开会丢失结构。 */
+const isAtomicGroupKind = (k: ElementKind | undefined): boolean => k === 'barcode' || k === 'svg'
 
 /** 工作区在标签四周多留的边距(mm)。对象可拖出标签"暂存"到这里；仅标签内对象会打印。
  *  画布会在对象被拖近边缘时自动向外扩张（等效"无限画布"），此值为初始留白。
@@ -91,6 +106,8 @@ function kindLabel(k: ElementKind): string {
       return '形状'
     case 'image':
       return '图片'
+    case 'svg':
+      return '素材'
   }
 }
 
@@ -514,10 +531,10 @@ export class CanvasController {
     const out: fabric.Object[] = []
     const walk = (list: fabric.Object[]) => {
       for (const o of list) {
-        // 条码虽是 fabric.Group，但它是「原子内容对象」，必须整体作为叶子返回：
-        // 若被穿透成子矩形，refreshAllContent 就永远遍历不到条码本身，
-        // rerenderBarcode 不会被调用 → 数据源/序列化递增时条码不跟随（一直停在首张值）。
-        if (this.isGroup(o) && !isContentKind(cf(o).kind)) {
+        // 条码 / SVG 素材虽是 fabric.Group，但都是「原子对象」，必须整体作为叶子返回。
+        // 若被穿透成子矩形/子路径：条码会失去 refresh 链路导致不跟随数据源；
+        // SVG 素材会被拆成不受支持的子 path，矢量导出直接丢失内容。
+        if (this.isGroup(o) && !isAtomicGroupKind(cf(o).kind)) {
           walk((o as fabric.Group).getObjects())
         } else {
           out.push(o)
@@ -793,6 +810,15 @@ export class CanvasController {
         cornerRadiusMm = roundMm(pxToMm((rect.rx ?? 0) * (rect.scaleX ?? 1)))
       }
       if (kind === 'shape') shapeType = c._shapeType ?? 'ellipse'
+      prefix = ''
+      suffix = ''
+      serial = undefined
+    } else if (kind === 'svg') {
+      // 素材：线稿类可改色（_svgColor），彩绘类（emoji）不支持
+      if (c._svgIsStroke) {
+        strokeColor = c._svgColor ?? '#000000'
+        strokeWidth = c._svgStrokeWidth ?? 2
+      }
       prefix = ''
       suffix = ''
       serial = undefined
@@ -1117,6 +1143,11 @@ export class CanvasController {
     const obj = this.getActiveObject()
     if (!obj) return
     const c = cf(obj)
+    // SVG 线稿素材：整组统一改色（并同步缓存色，保证矢量导出复用新颜色）
+    if (c.kind === 'svg') {
+      this.setActiveAssetColor(hex)
+      return
+    }
     if (!isStrokeKind(c.kind)) return
     obj.set({ stroke: hex, strokeUniform: true })
     this.canvas.requestRenderAll()
@@ -1828,6 +1859,115 @@ export class CanvasController {
     this.finalizeObject(img, 'image', null)
   }
 
+  /** 把 SVG 内部片段按 viewBox / 配色拼成完整 SVG 字符串（插入与矢量导出共用） */
+  composeAssetSvg(p: {
+    inner: string
+    viewBox: string
+    isStroke: boolean
+    color?: string
+    strokeWidth?: number
+  }): string {
+    const vb = p.viewBox || '0 0 24 24'
+    const head = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">`
+    if (!p.isStroke) return head + p.inner + '</svg>'
+    const sw = p.strokeWidth ?? 2
+    const c = p.color || '#000000'
+    return (
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" fill="none" stroke="${c}" ` +
+      `stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${p.inner}</svg>`
+    )
+  }
+
+  /** 取对象上的 SVG 素材数据（用于矢量导出整段重绘） */
+  svgDataFor(obj: fabric.Object): { svg: string; isStroke: boolean } | null {
+    const c = cf(obj)
+    if (c.kind !== 'svg' || !c._svgInner) return null
+    return {
+      svg: this.composeAssetSvg({
+        inner: c._svgInner,
+        viewBox: c._svgViewBox ?? '0 0 24 24',
+        isStroke: !!c._svgIsStroke,
+        color: c._svgColor,
+        strokeWidth: c._svgStrokeWidth,
+      }),
+      isStroke: !!c._svgIsStroke,
+    }
+  }
+
+  /**
+   * 插入素材（图标/表情）为矢量对象。
+   * 与 addImageFile（位图）不同：素材以 fabric.Group + path 子对象保存，
+   * 缩放不失真，PDF 导出时按整段 SVG 矢量重绘（见 vectorExport）。
+   */
+  async addSvgAsset(p: {
+    inner: string
+    viewBox: string
+    isStroke: boolean
+    color?: string
+    strokeWidth?: number
+    name?: string
+    targetMm?: number
+  }): Promise<boolean> {
+    const full = this.composeAssetSvg(p)
+    const parsed = await new Promise<{ objects: fabric.Object[]; options: Record<string, unknown> } | null>((resolve) => {
+      try {
+        fabric.loadSVGFromString(full, (objects, options) => resolve({ objects: objects ?? [], options: (options ?? {}) as Record<string, unknown> }))
+      } catch {
+        resolve(null)
+      }
+    })
+    if (!parsed || parsed.objects.length === 0) return false
+
+    let group: fabric.Object
+    try {
+      group = fabric.util.groupSVGElements(parsed.objects as fabric.Object[], parsed.options as unknown as never)
+    } catch {
+      return false
+    }
+    if (!group) return false
+
+    const rawW = parsed.objects.reduce((mx, o) => Math.max(mx, o.getBoundingRect(true).width), 0)
+    const rawH = parsed.objects.reduce((mx, o) => Math.max(mx, o.getBoundingRect(true).height), 0)
+    const base = Math.max(rawW, rawH) || 24
+    const target = mmToPx(p.targetMm ?? 15)
+    const k = target / base
+    group.set({ scaleX: k, scaleY: k, originX: 'left', originY: 'top' })
+
+    const c = cf(group)
+    c._svgInner = p.inner
+    c._svgViewBox = p.viewBox
+    c._svgIsStroke = p.isStroke
+    c._svgColor = p.isStroke ? p.color ?? '#000000' : undefined
+    c._svgStrokeWidth = p.isStroke ? p.strokeWidth ?? 2 : undefined
+    if (p.name) c._name = p.name
+
+    const w = group.getBoundingRect(true).width
+    const h = group.getBoundingRect(true).height
+    group.set({ left: this.paperCenter().x - w / 2, top: this.paperCenter().y - h / 2 })
+
+    this.finalizeObject(group, 'svg', null)
+    return true
+  }
+
+  /** 修改当前素材对象的线稿颜色（仅线稿类图标有效）；彩绘 emoji 不支持改色 */
+  setActiveAssetColor(color: string): boolean {
+    const obj = this.getActiveObject()
+    if (!obj) return false
+    const c = cf(obj)
+    if (c.kind !== 'svg' || !c._svgIsStroke) return false
+    c._svgColor = color
+    const kids = (obj as fabric.Group).getObjects?.() ?? []
+    for (const kid of kids) {
+      const kCf = cf(kid)
+      if (kCf.fill && kCf.fill !== 'none') continue // 保留原色填充
+      kid.set({ stroke: color, strokeUniform: true })
+    }
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    this.emitActive(obj)
+    return true
+  }
+
   private finalizeObject(obj: fabric.Object, kind: ElementKind, text: string | null) {
     const c = cf(obj)
     c.id = newId()
@@ -1867,6 +2007,13 @@ export class CanvasController {
       }
       if (c.kind === 'text') props.originalText = c.originalText
       if (c.kind === 'shape') props._shapeType = c._shapeType ?? 'ellipse'
+      if (c.kind === 'svg') {
+        props._svgInner = c._svgInner
+        props._svgViewBox = c._svgViewBox
+        props._svgIsStroke = !!c._svgIsStroke
+        if (c._svgColor) props._svgColor = c._svgColor
+        if (typeof c._svgStrokeWidth === 'number') props._svgStrokeWidth = c._svgStrokeWidth
+      }
       if (isContentKind(c.kind)) {
         if (c._prefix) props._prefix = c._prefix
         if (c._suffix) props._suffix = c._suffix
@@ -2035,6 +2182,13 @@ export class CanvasController {
     if (c.kind === 'shape') {
       c._shapeType = (s._shapeType as ShapeType) ?? 'ellipse'
       // fabric 重建 Polygon/Ellipse/Triangle 后重新补一个圆角为 0 的兜底
+    }
+    if (c.kind === 'svg') {
+      if (typeof s._svgInner === 'string') c._svgInner = s._svgInner
+      c._svgViewBox = (s._svgViewBox as string | undefined) ?? '0 0 24 24'
+      c._svgIsStroke = !!s._svgIsStroke
+      c._svgColor = (s._svgColor as string | undefined) ?? undefined
+      c._svgStrokeWidth = (s._svgStrokeWidth as number | undefined) ?? 2
     }
     if (!c._name) c._name = defaultName((c.kind ?? 'text') as ElementKind) // 兼容无命名的旧模板
     // 还原锁定状态（载入模板后让锁定对象真正不可拖动/缩放）

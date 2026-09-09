@@ -5,6 +5,8 @@ import TopBar from '@/sections/TopBar'
 import Toolbox from '@/sections/Toolbox'
 import PropertyPanel from '@/sections/PropertyPanel'
 import DataDock from '@/sections/DataDock'
+import AssetsPanel from '@/sections/AssetsPanel'
+import type { AssetItem } from '@/types/assets'
 import { CanvasController } from '@/lib/canvasEngine'
 import { parseSpreadsheet } from '@/lib/spreadsheet'
 import { mountRulers, type RulerHandle } from '@/lib/rulers'
@@ -84,6 +86,7 @@ export default function App() {
   /** 拖动/缩放吸附开关（默认开启） */
   const [snapEnabled, setSnapEnabled] = useState(true)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [assetsOpen, setAssetsOpen] = useState(false)
   const panRef = useRef({ x: 0, y: 0 })
 
   // 移动端：单击选中即可（移动/拉伸由 fabric 原生处理），仅在「取消选中」时收起抽屉；
@@ -739,6 +742,28 @@ export default function App() {
     }
   }, [])
 
+  /**
+   * 插入素材（图标 / 表情）到标签中心。
+   * 素材以矢量保存：缩放不失真，PDF 导出时整段重绘为矢量路径。
+   */
+  const onInsertAsset = useCallback(async (item: AssetItem) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) {
+      toast.error('画布未就绪')
+      return
+    }
+    const ok = await ctrl.addSvgAsset({
+      inner: item.inner,
+      viewBox: item.set === 'emoji' ? '0 0 36 36' : '0 0 24 24',
+      isStroke: item.set !== 'emoji',
+      color: '#111827',
+      strokeWidth: item.set === 'symbols' ? 1.5 : 2,
+      name: item.name,
+      targetMm: 15,
+    })
+    if (!ok) toast.error('素材插入失败')
+  }, [])
+
   // ── 工具栏文件动作 ──────────────────────────────────────
   const onNew = useCallback(() => {
     const ctrl = ctrlRef.current
@@ -1041,7 +1066,15 @@ export default function App() {
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <Toolbox tool={tool} onToolChange={setTool} onPickImage={onPickImage} />
+        <Toolbox
+          tool={tool}
+          onToolChange={setTool}
+          onPickImage={onPickImage}
+          onOpenAssets={() => setAssetsOpen((v) => !v)}
+        />
+
+        {/* 素材库面板（本地素材，点击即插入画布中心） */}
+        <AssetsPanel open={assetsOpen} onClose={() => setAssetsOpen(false)} onInsert={onInsertAsset} />
 
         {/* 中间画布视口 */}
         <div
