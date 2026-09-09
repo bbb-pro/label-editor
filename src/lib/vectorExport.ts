@@ -9,7 +9,7 @@
 // - 旋转：文本用 jsPDF text({angle})，图形绕中心旋转后描点。
 import jsPDF from 'jspdf'
 import { Font } from 'fonteditor-core'
-import type { PaperSize } from '@/types/template'
+import type { PaperSize, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
 import { pxToPt } from '@/lib/textStyles'
@@ -24,6 +24,8 @@ export interface VectorPdfOptions {
   copies?: number
   name?: string
   onProgress?: (done: number, total: number) => void
+  /** 按表格行批量导出：传入要打印的数据行，每页切换一次预览行（文本框名称=表头时自动取该列值） */
+  rows?: DataRow[]
 }
 
 /** fabric 自带的辅助：1/1000 em → 毫米的缩放系数由字号决定，见使用处 */
@@ -553,7 +555,7 @@ export async function exportVectorPdf(
   paper: PaperSize,
   options: VectorPdfOptions = {},
 ): Promise<void> {
-  const { copies = 1, name = '标签', onProgress } = options
+  const { copies = 1, name = '标签', onProgress, rows } = options
   const canvas = controller.canvas
   if (canvas.getObjects().length === 0) return
 
@@ -562,17 +564,20 @@ export async function exportVectorPdf(
   originX = pb.left
   originY = pb.top
 
-  const serialActive = controller.hasActiveSerial()
-  const pageCount = serialActive ? Math.max(1, Math.floor(copies)) : 1
+  const rowMode = !!(rows && rows.length > 0)
+  const serialActive = !rowMode && controller.hasActiveSerial()
+  const pageCount = rowMode ? rows!.length : serialActive ? Math.max(1, Math.floor(copies)) : 1
   const prevSeq = controller.seqValue
 
   // 收集全部页文本 → 一次性子集字体
   const textPool: string[] = []
   for (let p = 0; p < pageCount; p++) {
-    if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
+    if (rowMode) controller.setPreviewRow(rows![p])
+    else if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
     textPool.push(pageChars(controller))
   }
-  if (serialActive) controller.setSeqValue(prevSeq)
+  if (rowMode) controller.setPreviewRow(null)
+  else if (serialActive) controller.setSeqValue(prevSeq)
 
   const doc = new jsPDF({
     orientation: paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait',
@@ -596,12 +601,14 @@ export async function exportVectorPdf(
       if (p > 0) {
         doc.addPage([paper.widthMm, paper.heightMm], paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait')
       }
-      if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
+      if (rowMode) controller.setPreviewRow(rows![p])
+      else if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
       flattenLeaves(controller).forEach((o) => drawLeaf(doc, o, controller))
       onProgress?.(p + 1, pageCount)
     }
   } finally {
-    if (serialActive) controller.setSeqValue(prevSeq)
+    if (rowMode) controller.setPreviewRow(null)
+    else if (serialActive) controller.setSeqValue(prevSeq)
     if (hadSel && prevSel) {
       canvas.setActiveObject(prevSel)
       canvas.requestRenderAll()

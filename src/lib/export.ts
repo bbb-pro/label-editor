@@ -1,6 +1,6 @@
 // 输出：模板 JSON 下载、PNG、PDF、浏览器打印
 import jsPDF from 'jspdf'
-import type { PaperSize, LabelTemplate } from '@/types/template'
+import type { PaperSize, LabelTemplate, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 
 function download(dataUrlOrBlob: Blob | string, filename: string) {
@@ -90,6 +90,42 @@ export async function renderSeqPages(
     await controller.whenIdle()
   } finally {
     // 恢复选中，避免破坏用户连续编辑流程
+    if (prevSelection && prevActive) {
+      canvas.setActiveObject(prevActive)
+      canvas.requestRenderAll()
+    }
+  }
+  return pages
+}
+
+/**
+ * 逐张渲染「按表格行」页面（文本框名称 = 表头 自动绑定列）。
+ * 每一页：切换画布预览到对应数据行 → 等重绘完成 → 截图。
+ * 结束后把画布还原为设计态（previewRow = null）。
+ * @param onProgress 已完成页数回调（0 起）
+ */
+export async function renderRowPages(
+  controller: CanvasController,
+  rows: DataRow[],
+  scale = 3,
+  onProgress?: (done: number, total: number) => void,
+): Promise<string[]> {
+  const pages: string[] = []
+  const total = Math.max(1, rows.length)
+  const canvas = controller.canvas
+  const prevActive = canvas.getActiveObject()
+  const prevSelection = prevActive ? true : false
+  if (prevSelection) canvas.discardActiveObject()
+  try {
+    for (let i = 0; i < total; i++) {
+      controller.setPreviewRow(rows[i])
+      await controller.whenIdle()
+      pages.push(canvasToHighResDataUrl(controller, scale))
+      onProgress?.(i + 1, total)
+    }
+    controller.setPreviewRow(null)
+    await controller.whenIdle()
+  } finally {
     if (prevSelection && prevActive) {
       canvas.setActiveObject(prevActive)
       canvas.requestRenderAll()

@@ -162,6 +162,10 @@ export class CanvasController {
   /** 临时屏蔽 object:added/removed 的 onDirty 回调（构造期间/纸卡重建时） */
   private _suppressDirty = false
   previewRow: DataRow | null = null
+  /** 已导入表格的表头（用于「文本框名称 = 表头」的自动列绑定） */
+  headers: string[] = []
+  /** 已导入表格的数据行 */
+  dataRows: DataRow[] = []
   /** 批量打印当前副本的序列号显示值；null 表示用示例值预览 */
   seqValue: string | null = null
   /** 撤销栈：每次编辑前 push 的画布 JSON（canvas.toJSON()） */
@@ -1674,10 +1678,29 @@ export class CanvasController {
     return s.replace(SERIAL_TOKEN, () => val)
   }
 
+  /** 对象名称是否绑定到表格某列（表头同名且有数据）。绑定后整段内容由该列当前行单元格值替换。 */
+  private bindingHeader(c: ReturnType<typeof cf>): string | null {
+    if (!this.headers.length || !this.dataRows.length) return null
+    const nm = c._name
+    if (nm && this.headers.includes(nm)) return nm
+    return null
+  }
+
+  /** 对象的“设计原文”，已处理「名称=表头」的列绑定（无需在内容里写 {{}}）。 */
+  private rawDesign(c: ReturnType<typeof cf>): string {
+    const h = this.bindingHeader(c)
+    if (h) {
+      // 绑定列：设计态显示列名（直观体现“名称=表头”的对应），预览/打印时显示该列具体数据
+      const core = this.previewRow ? String(this.previewRow[h] ?? '') : h
+      return (c._prefix ?? '') + core + (c._suffix ?? '')
+    }
+    return this.decoratedDesign(c)
+  }
+
   /** 收集内容对象的“名称 -> 当前显示文案”映射，供跨对象引用解析。
    *  关键：对已命名且开启了序列化的对象，额外套用 finalizeSerial（末尾数字替换当前 seqValue），
    *  使 {{对象名}} 引用的对象（如条码引用序列化文本框）能逐张跟随递增。
-   *  其余保持原行为：只做 applySeq({{seq}})，数据列留待引用方 resolveContent 统一处理。 */
+   *  绑定到表格列的对象，其映射值取该列当前行单元格值（见 rawDesign），使跨对象引用也跟随数据。 */
   private buildContentMap(): Map<string, string> {
     const map = new Map<string, string>()
     this.flattenTopLevel().forEach((o) => {
@@ -1685,7 +1708,7 @@ export class CanvasController {
       if (!isContentKind(c.kind)) return
       const nm = c._name
       if (!nm) return
-      map.set(nm, this.finalizeSerial(o, this.applySeq(this.decoratedDesign(c))))
+      map.set(nm, this.finalizeSerial(o, this.applySeq(this.rawDesign(c))))
     })
     return map
   }
@@ -1695,10 +1718,10 @@ export class CanvasController {
     return resolveContent(this.applySeq(design), this.previewRow, this.buildContentMap(), new Set())
   }
 
-  /** 计算某内容对象要显示的最终文案（含前后缀/序列号/变量/跨对象） */
+  /** 计算某内容对象要显示的最终文案（含前后缀/序列号/变量/跨对象/列绑定） */
   private displayContent(o: fabric.Object): string {
     const c = cf(o)
-    return this.finalizeSerial(o, this.resolveDesign(this.decoratedDesign(c)))
+    return this.finalizeSerial(o, this.resolveDesign(this.rawDesign(c)))
   }
 
   /** 对外：取对象当前应显示的文案（已套用当前 seqValue/末尾数字序列化），供矢量导出使用 */
@@ -1817,6 +1840,14 @@ export class CanvasController {
   }
 
   // ── 变量替换 / 预览 ─────────────────────────────────────
+  /** 导入表格后登记表头与数据行，供「文本框名称 = 表头」的自动列绑定 */
+  setSpreadsheet(headers: string[], rows: DataRow[]) {
+    this.headers = headers
+    this.dataRows = rows
+    this.refreshAllContent()
+    this.events.onDirty()
+  }
+
   setPreviewRow(row: DataRow | null) {
     this.previewRow = row
     this.refreshAllContent()
@@ -1858,6 +1889,15 @@ export class CanvasController {
   /** 是否存在需要批量递增的序列号 */
   hasActiveSerial(): boolean {
     return this.firstSerial() != null
+  }
+
+  /** 是否存在“名称与表头同名”的绑定对象（用于判断是否按表格行批量打印） */
+  hasDataBindings(): boolean {
+    if (!this.headers.length || !this.dataRows.length) return false
+    return this.flattenTopLevel().some((o) => {
+      const c = cf(o)
+      return isContentKind(c.kind) && !!c._name && this.headers.includes(c._name)
+    })
   }
 
   /** 第 index 张（0 起）应显示的序号串；无序列化配置则返回 null */

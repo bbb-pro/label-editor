@@ -395,7 +395,7 @@ function SelectedObjectPanel({
           </Button>
         </div>
         {canEditContent && (
-          <NameField value={active.name} onChange={onNameChange} />
+          <NameField value={active.name} onChange={onNameChange} headers={headers} />
         )}
       </Section>
 
@@ -590,15 +590,23 @@ function SelectedObjectPanel({
 function NameField({
   value,
   onChange,
+  headers,
 }: {
   value: string
   onChange: (name: string) => void
+  headers: string[]
 }) {
+  const bound = value && headers.includes(value)
   return (
     <div className="pt-2">
       <label className="flex items-center gap-1.5">
         <TagIcon className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-[11px] text-muted-foreground">名称</span>
+        {bound && (
+          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-600">
+            已关联列：{value}
+          </span>
+        )}
       </label>
       <Input
         value={value}
@@ -607,8 +615,24 @@ function NameField({
         className="mt-1 h-8 text-xs"
       />
       <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-        命名后可在其它文本/条码内容中引用，如{' '}
-        <code className="rounded bg-muted px-1">{"{{商品名}}"}</code>。
+        {headers.length > 0 ? (
+          bound ? (
+            <>
+              此文本框当前行将自动填充「<b className="font-mono">{value}</b>」列的数据。
+            </>
+          ) : (
+            <>
+              把名称设为与表格表头一致（如{' '}
+              <code className="rounded bg-muted px-1">{headers[0]}</code>），即可整框取该列数据，无需在内容里写{' '}
+              <code className="rounded bg-muted px-1">{'{{ }}'}</code>。
+            </>
+          )
+        ) : (
+          <>
+            命名后可在其它文本/条码内容中引用，如{' '}
+            <code className="rounded bg-muted px-1">{"{{商品名}}"}</code>。
+          </>
+        )}
       </p>
     </div>
   )

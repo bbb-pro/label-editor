@@ -15,6 +15,7 @@ import {
   printCanvas,
   printBatch,
   renderSeqPages,
+  renderRowPages,
   canvasToHighResDataUrl,
 } from '@/lib/export'
 import { exportVectorPdf } from '@/lib/vectorExport'
@@ -65,6 +66,7 @@ export default function App() {
   const [currentIndex, setCurrentIndex] = useState(-1)
   // 批量序列化：'print' | 'pdf' | 'png' | null
   const [batchMode, setBatchMode] = useState<'print' | 'pdf' | 'png' | null>(null)
+  const [batchKind, setBatchKind] = useState<'rows' | 'copies'>('copies')
   const [batchBusy, setBatchBusy] = useState(false)
   /** 画布上生效的序列化配置（用于批量对话框预览） */
   const [activeSerial, setActiveSerial] = useState<SerialSpec | null>(null)
@@ -775,23 +777,30 @@ export default function App() {
       if (!ctrl) return
       setBatchBusy(true)
       try {
-        // PDF：走矢量导出（文本可选中/搜索，中文内嵌子集字体），内部按份数分页
+        const rowMode = ctrl.hasDataBindings() && rows.length > 0
+        const rowPages = rowMode ? rows.slice(0, Math.max(1, copies)) : []
+        // PDF：走矢量导出（文本可选中/搜索，中文内嵌子集字体）
         if (mode === 'pdf') {
           await exportVectorPdf(ctrl, paper, {
-            copies: ctrl.hasActiveSerial() ? copies : 1,
+            copies: ctrl.hasActiveSerial() && !rowMode ? copies : 1,
+            rows: rowMode ? rowPages : undefined,
             onProgress: (done, total) => {
               if (done % 10 === 0 || done === total) toast.message(`正在生成矢量 PDF ${done}/${total}…`)
             },
           })
           toast.success('PDF 已导出（矢量）')
         } else {
-          const pages = ctrl.hasActiveSerial()
-            ? await renderSeqPages(ctrl, copies, 3, (done, total) => {
-                if (done % 10 === 0 || done === total) {
-                  toast.message(`正在渲染 ${done}/${total} 张…`)
-                }
+          const pages = rowMode
+            ? await renderRowPages(ctrl, rowPages, 3, (done, total) => {
+                if (done % 10 === 0 || done === total) toast.message(`正在渲染 ${done}/${total} 张…`)
               })
-            : [canvasToHighResDataUrl(ctrl, 3)]
+            : ctrl.hasActiveSerial()
+              ? await renderSeqPages(ctrl, copies, 3, (done, total) => {
+                  if (done % 10 === 0 || done === total) {
+                    toast.message(`正在渲染 ${done}/${total} 张…`)
+                  }
+                })
+              : [canvasToHighResDataUrl(ctrl, 3)]
           if (mode === 'print') {
             await printBatch(pages, paper)
             toast.success(`已提交 ${pages.length} 张到打印`)
@@ -809,7 +818,7 @@ export default function App() {
         setBatchMode(null)
       }
     },
-    [paper],
+    [paper, rows],
   )
 
   const onPrint = useCallback(() => {
@@ -818,13 +827,19 @@ export default function App() {
       toast.warning('画布为空', { description: '请先添加内容' })
       return
     }
-    // 启用了序列化 → 先问份数；否则单张直打
+    // 已绑定表格列 → 先问要打印几行；启用了序列化 → 先问份数；否则单张直打
+    if (ctrl.hasDataBindings() && rows.length > 0) {
+      setBatchKind('rows')
+      setBatchMode('print')
+      return
+    }
     if (ctrl.hasActiveSerial()) {
+      setBatchKind('copies')
       setBatchMode('print')
       return
     }
     void printCanvas(ctrl, paper)
-  }, [paper])
+  }, [paper, rows])
 
   const onExportPng = useCallback(() => {
     const ctrl = ctrlRef.current
@@ -832,14 +847,20 @@ export default function App() {
       toast.warning('画布为空', { description: '请先添加内容' })
       return
     }
-    // 启用了序列化 → 先问份数，导出多张递增 PNG
+    // 已绑定表格列 → 先问要导出几行；启用了序列化 → 先问份数
+    if (ctrl.hasDataBindings() && rows.length > 0) {
+      setBatchKind('rows')
+      setBatchMode('png')
+      return
+    }
     if (ctrl.hasActiveSerial()) {
+      setBatchKind('copies')
       setBatchMode('png')
       return
     }
     void exportPng(ctrl)
     toast.success('PNG 已导出')
-  }, [])
+  }, [rows])
 
   const onExportPdf = useCallback(() => {
     const ctrl = ctrlRef.current
@@ -847,8 +868,14 @@ export default function App() {
       toast.warning('画布为空', { description: '请先添加内容' })
       return
     }
-    // 启用了序列化 → 先问份数，导出多页递增 PDF
+    // 已绑定表格列 → 先问要导出几行；启用了序列化 → 先问份数
+    if (ctrl.hasDataBindings() && rows.length > 0) {
+      setBatchKind('rows')
+      setBatchMode('pdf')
+      return
+    }
     if (ctrl.hasActiveSerial()) {
+      setBatchKind('copies')
       setBatchMode('pdf')
       return
     }
@@ -857,12 +884,14 @@ export default function App() {
         description: err instanceof Error ? err.message : '请重试',
       }),
     )
-  }, [paper])
+  }, [paper, rows])
 
   // ── 数据导入与预览 ──────────────────────────────────────
   const onPickFile = useCallback(
     async (file: File) => {
       try {
+        const ctrl = ctrlRef.current
+        if (!ctrl) return
         const res = await parseSpreadsheet(file)
         if (res.rows.length === 0) {
           toast.warning('未读取到数据行', { description: '请确认首行为表头' })
@@ -872,6 +901,7 @@ export default function App() {
         setRows(res.rows)
         setFileName(res.fileName)
         setCurrentIndex(-1) // 设计态，不自动替换
+        ctrl.setSpreadsheet(res.headers, res.rows) // 登记列绑定（文本框名称=表头）
         toast.success(`已解析 ${res.rows.length} 行数据`)
       } catch (err) {
         toast.error('数据解析失败', {
@@ -1242,6 +1272,8 @@ export default function App() {
       <BatchDialog
         open={batchMode !== null}
         onOpenChange={(v) => !v && setBatchMode(null)}
+        rowsMode={batchKind === 'rows'}
+        totalRows={rows.length}
         title={
           batchMode === 'pdf'
             ? '批量导出 PDF'
@@ -1249,8 +1281,12 @@ export default function App() {
               ? '批量导出 PNG'
               : '批量打印'
         }
-        description="画布中使用了 {{seq}} 且已开启序列化，请选择要输出的份数，序号将逐张递增。"
-        defaultCopies={DEFAULT_COPIES}
+        description={
+          batchKind === 'rows'
+            ? `画布中已有文本框与表格列绑定（名称 = 表头）。请选择要打印的行数，每行将按对应数据生成一张。共 ${rows.length} 行数据。`
+            : '画布中使用了 {{seq}} 且已开启序列化，请选择要输出的份数，序号将逐张递增。'
+        }
+        defaultCopies={batchKind === 'rows' ? Math.min(rows.length, DEFAULT_COPIES) : DEFAULT_COPIES}
         confirmLabel={
           batchMode === 'pdf' ? '导出 PDF' : batchMode === 'png' ? '导出 PNG' : '打印'
         }
