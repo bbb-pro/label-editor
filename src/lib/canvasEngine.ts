@@ -4,7 +4,7 @@ import { mmToPx, pxToMm, roundMm } from '@/lib/mm'
 import { is2dType, defaultSettingsFor, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import { pxToPt, ptToPx } from '@/lib/textStyles'
-import type { PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
+import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
 import { resolveContent } from '@/lib/content'
 import type { ActiveObject, TextFormatSnapshot, TextStyle } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
@@ -85,6 +85,8 @@ const WORKSPACE_MARGIN_MM = 600
 const GROW_TRIGGER_PX = 120
 /** 每次向外扩张的增量(mm) */
 const GROW_STEP_MM = 100
+/** 多标签：相邻两张纸之间的间距(mm) */
+const PAPER_GAP_MM = 20
 
 /** 取自定义字段读写器（类型断言，绕开 fabric 泛型 set） */
 function cf(o: fabric.Object): fabric.Object & CustomFields {
@@ -169,15 +171,39 @@ export function formatSeq(value: number, minDigits: number): string {
 export class CanvasController {
   canvas: fabric.Canvas
   private events: ControllerEvents
-  private paperPxW: number
-  private paperPxH: number
-  /** 工作区在画布原点四周多留的边距(像素)，让对象可"暂存"到标签外 */
-  private paperOffsetX = 0
-  private paperOffsetY = 0
+  /**
+   * 工作区内的多张标签纸（多标签编辑：同一个文件里并排做几种标签）。
+   * 单纸时 papers 只有一项，行为与历史版本完全一致。
+   */
+  papers: PaperArea[] = []
+  private activePaperIdValue = ''
+  /** 每张纸对应的「纸卡」背景矩形（渲染产物，不入模板） */
+  private paperRects = new Map<string, fabric.Rect>()
   private workspaceW = 0
   private workspaceH = 0
-  /** 标签"纸卡"背景矩形：selectable:false 不可点选，excludeFromExport:true 不导出 */
-  private paperRect: fabric.Rect | null = null
+
+  // ── 当前活动纸的便捷读取 ──
+  // 这些 getter 让历史上「唯一纸张」的所有引用（插入居中/吸附/纸卡/导出裁剪）
+  // 自动变成「对当前活动纸生效」，多纸改造无需逐处重写。
+  private get activePaper(): PaperArea {
+    return this.papers.find((p) => p.id === this.activePaperIdValue) ?? this.papers[0]
+  }
+  private get paperPxW(): number {
+    return mmToPx(this.activePaper.widthMm)
+  }
+  private get paperPxH(): number {
+    return mmToPx(this.activePaper.heightMm)
+  }
+  /** 活动纸左上角在工作区中的像素坐标（对象坐标减它 = 相对纸张原点） */
+  private get paperOffsetX(): number {
+    return this.activePaper.left
+  }
+  private get paperOffsetY(): number {
+    return this.activePaper.top
+  }
+  private get paperRect(): fabric.Rect | null {
+    return this.paperRects.get(this.activePaper.id) ?? null
+  }
   /** 临时屏蔽 object:added/removed 的 onDirty 回调（构造期间/纸卡重建时） */
   private _suppressDirty = false
   previewRow: DataRow | null = null
@@ -187,6 +213,12 @@ export class CanvasController {
   dataRows: DataRow[] = []
   /** 批量打印当前副本的序列号显示值；null 表示用示例值预览 */
   seqValue: string | null = null
+  /**
+   * 批量打印当前页码(0 起)；null = 设计态。
+   * 有值时每个序列化对象按**自己的** start/step/minDigits 计算序号，
+   * 这样多张标签纸可以各自定义起始值（如纸1 从 1、纸2 从 100），互不串号。
+   */
+  seqIndex: number | null = null
   /** 撤销栈：每次编辑前 push 的画布 JSON（canvas.toJSON()） */
   private undoStack: Array<Record<string, unknown>> = []
   /** 剪贴板：复制出的对象 JSON 列表 */
@@ -207,11 +239,15 @@ export class CanvasController {
 
   constructor(canvasEl: HTMLCanvasElement, paper: PaperSize, events: ControllerEvents) {
     this.events = events
-    this.paperPxW = mmToPx(paper.widthMm)
-    this.paperPxH = mmToPx(paper.heightMm)
     // 工作区外圈：四周多出 WORKSPACE_MARGIN_MM 像素，让对象可以"暂存"到标签外
-    this.paperOffsetX = mmToPx(WORKSPACE_MARGIN_MM)
-    this.paperOffsetY = mmToPx(WORKSPACE_MARGIN_MM)
+    const first = this.makePaper(
+      '标签 1',
+      paper,
+      mmToPx(WORKSPACE_MARGIN_MM),
+      mmToPx(WORKSPACE_MARGIN_MM),
+    )
+    this.papers = [first]
+    this.activePaperIdValue = first.id
     this.resizeWorkspace()
 
     this.canvas = new fabric.Canvas(canvasEl, {
@@ -289,7 +325,7 @@ export class CanvasController {
     this.canvas.on('object:removed', () => { if (!this._suppressDirty) this.events.onDirty() })
     // 标签"纸卡"背景矩形 + 默认工作区底色
     this.canvas.backgroundColor = '#e2e8f0'
-    this.recreatePaperRect()
+    this.recreatePaperRects()
   }
 
   // ── 异步渲染追踪 ─────────────────────────────────────────
@@ -832,8 +868,9 @@ export class CanvasController {
       name: c._name ?? '',
       locked: !!c._locked,
       kind,
-      x: roundMm(pxToMm((obj.left ?? 0) - this.paperOffsetX)),
-      y: roundMm(pxToMm((obj.top ?? 0) - this.paperOffsetY)),
+      // XY 相对「对象所属那张纸」的左上角（多标签时按归属纸计算，不是活动纸）
+      x: roundMm(pxToMm((obj.left ?? 0) - this.paperFor(obj).left)),
+      y: roundMm(pxToMm((obj.top ?? 0) - this.paperFor(obj).top)),
       width: roundMm(pxToMm(obj.getScaledWidth() ?? obj.width ?? 0)),
       height: roundMm(pxToMm(obj.getScaledHeight() ?? obj.height ?? 0)),
       angle: Math.round(obj.angle ?? 0),
@@ -901,19 +938,160 @@ export class CanvasController {
   }
 
   // ── 纸张 ────────────────────────────────────────────────
+  /** 改当前活动纸的尺寸（面板的纸张宽/高） */
   applyPaper(paper: PaperSize) {
-    this.paperPxW = mmToPx(paper.widthMm)
-    this.paperPxH = mmToPx(paper.heightMm)
+    const ap = this.activePaper
+    ap.widthMm = paper.widthMm
+    ap.heightMm = paper.heightMm
+    this.relayoutPapers()
     this.resizeWorkspace()
-    this.recreatePaperRect()
+    this.recreatePaperRects()
     this.canvas.requestRenderAll()
     this.events.onDirty()
   }
 
-  /** 重新计算工作区尺寸 = 标签 + 四周留白(逻辑尺寸,canvas 实际尺寸由 setViewportSize 控制) */
+  // ── 多标签（多纸）管理 ──────────────────────────────────
+  /**
+   * 纵向重排：纸 0 保持位置不变，其后每张纸紧接上一张下沿 + 间距。
+   * 改尺寸/增删纸后调用，避免高矮不一时互相重叠或留空。
+   */
+  private relayoutPapers() {
+    if (this.papers.length === 0) return
+    const gap = mmToPx(PAPER_GAP_MM)
+    for (let i = 1; i < this.papers.length; i++) {
+      const prev = this.papers[i - 1]
+      this.papers[i].top = prev.top + mmToPx(prev.heightMm) + gap
+      this.papers[i].left = prev.left
+    }
+  }
+
+  private makePaper(name: string, size: PaperSize, left: number, top: number): PaperArea {
+    return {
+      id: `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      name,
+      widthMm: size.widthMm,
+      heightMm: size.heightMm,
+      left,
+      top,
+    }
+  }
+
+  /** 纸张列表（副本，供 UI 渲染） */
+  listPapers(): PaperArea[] {
+    return this.papers.map((p) => ({ ...p }))
+  }
+
+  /** 当前活动纸 id */
+  activePaperId(): string {
+    return this.activePaper.id
+  }
+
+  setActivePaper(id: string) {
+    if (!this.papers.some((p) => p.id === id)) return
+    if (this.activePaperIdValue === id) return
+    this.activePaperIdValue = id
+    // 切换标签时清掉选中：避免属性面板还停留在上一张纸的对象上
+    this.canvas.discardActiveObject()
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    this.events.onActiveChange(null)
+  }
+
+  renamePaper(id: string, name: string) {
+    const p = this.papers.find((x) => x.id === id)
+    if (!p) return
+    p.name = name
+    this.events.onDirty()
+  }
+
+  /**
+   * 在当前活动纸的下方追加一张新纸（尺寸沿用当前纸），并切换为活动纸。
+   * 返回新纸 id；UI 可用它做后续定位。
+   */
+  addPaper(): string {
+    const cur = this.activePaper
+    const p = this.makePaper(
+      `标签 ${this.papers.length + 1}`,
+      { widthMm: cur.widthMm, heightMm: cur.heightMm },
+      cur.left,
+      cur.top + mmToPx(cur.heightMm) + mmToPx(PAPER_GAP_MM),
+    )
+    this.papers.push(p)
+    this.activePaperIdValue = p.id
+    this.relayoutPapers()
+    this.resizeWorkspace()
+    this.recreatePaperRects()
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    return p.id
+  }
+
+  /** 删除一张纸（连同纸内对象）。至少保留一张，最后一张不可删。 */
+  removePaper(id: string): boolean {
+    if (this.papers.length <= 1) return false
+    const idx = this.papers.findIndex((p) => p.id === id)
+    if (idx < 0) return false
+    // 归属该纸的对象一并删除，避免残留在别处造成错乱
+    const doomed = this.canvas
+      .getObjects()
+      .filter(
+        (o) => !(o as { excludeFromExport?: boolean }).excludeFromExport && this.paperFor(o)?.id === id,
+      )
+    this._suppressDirty = true
+    for (const o of doomed) this.canvas.remove(o)
+    this._suppressDirty = false
+    this.papers.splice(idx, 1)
+    if (this.activePaperIdValue === id) {
+      this.activePaperIdValue = this.papers[Math.min(idx, this.papers.length - 1)].id
+    }
+    this.relayoutPapers()
+    this.resizeWorkspace()
+    this.recreatePaperRects()
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    this.events.onActiveChange(null)
+    return true
+  }
+
+  /**
+   * 判断对象归属哪张纸：中心落在哪张纸内即归属它；
+   * 都不在（拖到纸外暂存）时取相交面积最大的一张；仍无则归活动纸。
+   */
+  paperFor(obj: fabric.Object): PaperArea {
+    const b = obj.getBoundingRect(true)
+    const cx = b.left + b.width / 2
+    const cy = b.top + b.height / 2
+    for (const p of this.papers) {
+      const w = mmToPx(p.widthMm)
+      const h = mmToPx(p.heightMm)
+      if (cx >= p.left && cx <= p.left + w && cy >= p.top && cy <= p.top + h) return p
+    }
+    let best: PaperArea | null = null
+    let bestArea = 0
+    for (const p of this.papers) {
+      const w = mmToPx(p.widthMm)
+      const h = mmToPx(p.heightMm)
+      const ow = Math.min(b.left + b.width, p.left + w) - Math.max(b.left, p.left)
+      const oh = Math.min(b.top + b.height, p.top + h) - Math.max(b.top, p.top)
+      if (ow > 0 && oh > 0 && ow * oh > bestArea) {
+        bestArea = ow * oh
+        best = p
+      }
+    }
+    return best ?? this.activePaper
+  }
+
+  /** 重新计算工作区尺寸 = 包住所有纸 + 四周留白(逻辑尺寸,canvas 实际尺寸由 setViewportSize 控制) */
   private resizeWorkspace() {
-    this.workspaceW = this.paperPxW + this.paperOffsetX * 2
-    this.workspaceH = this.paperPxH + this.paperOffsetY * 2
+    const margin = mmToPx(WORKSPACE_MARGIN_MM)
+    let maxR = 0
+    let maxB = 0
+    for (const p of this.papers) {
+      maxR = Math.max(maxR, p.left + mmToPx(p.widthMm))
+      maxB = Math.max(maxB, p.top + mmToPx(p.heightMm))
+    }
+    this.workspaceW = maxR + margin
+    this.workspaceH = maxB + margin
     // canvas 尺寸 = 视口(由 setViewportSize 控制),不再随工作区增长;
     // 工作区仅作为逻辑坐标空间,显示缩放由 viewportTransform 承担。
   }
@@ -934,8 +1112,11 @@ export class CanvasController {
     // 左/上扩张：整体平移，保持视觉不变
     const dx = side === 'left' ? delta : 0
     const dy = side === 'top' ? delta : 0
-    this.paperOffsetX += dx
-    this.paperOffsetY += dy
+    // 多纸：所有纸一起平移（相对关系保持不变）
+    for (const p of this.papers) {
+      p.left += dx
+      p.top += dy
+    }
     if (side === 'left') this.workspaceW += delta
     else this.workspaceH += delta
     this._suppressDirty = true
@@ -944,7 +1125,7 @@ export class CanvasController {
       o.setCoords()
     }
     this._suppressDirty = false
-    this.recreatePaperRect()
+    this.recreatePaperRects()
     this.canvas.requestRenderAll()
   }
 
@@ -971,45 +1152,59 @@ export class CanvasController {
     return grew
   }
 
-  /** 标签"纸卡"：白底矩形带淡灰边，置于工作区中央，不可交互、不参与导出 */
-  private recreatePaperRect() {
+  /** 标签"纸卡"：白底矩形带淡灰边，不可交互、不参与导出。多标签时每张纸各一张。 */
+  private recreatePaperRects() {
     this._suppressDirty = true
-    if (this.paperRect) {
-      this.canvas.remove(this.paperRect)
-      this.paperRect = null
+    // 先清掉已有纸卡：包含 undo 快照/旧模板带回来的残留，否则会逐次叠加
+    for (const [, rect] of this.paperRects) this.canvas.remove(rect)
+    this.paperRects.clear()
+    for (const o of [...this.canvas.getObjects()]) {
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport) this.canvas.remove(o)
     }
-    const rect = new fabric.Rect({
-      left: this.paperOffsetX,
-      top: this.paperOffsetY,
-      width: this.paperPxW,
-      height: this.paperPxH,
-      fill: '#ffffff',
-      stroke: '#cbd5e1',
-      strokeWidth: 1,
-      opacity: 1,
-      selectable: false,
-      evented: false,
-      excludeFromExport: true,
-      hoverCursor: 'default',
-    })
-    // 放到最底
-    this.canvas.add(rect)
-    this.canvas.sendToBack(rect)
-    this.paperRect = rect
+    for (const p of this.papers) {
+      const rect = new fabric.Rect({
+        left: p.left,
+        top: p.top,
+        width: mmToPx(p.widthMm),
+        height: mmToPx(p.heightMm),
+        fill: '#ffffff',
+        stroke: '#cbd5e1',
+        strokeWidth: 1,
+        opacity: 1,
+        selectable: false,
+        evented: false,
+        excludeFromExport: true,
+        hoverCursor: 'default',
+      })
+      this.canvas.add(rect)
+      this.paperRects.set(p.id, rect)
+    }
+    // 全部纸卡沉到最底
+    for (const p of this.papers) {
+      const r = this.paperRects.get(p.id)
+      if (r) this.canvas.sendToBack(r)
+    }
     this._suppressDirty = false
   }
 
-  /** 判断对象是否在标签区域内（用于导出时过滤 + 视觉提示） */
+  /** 判断对象是否在任意一张标签纸内（用于导出过滤 + 视觉提示） */
   isObjectInPaper(obj: fabric.Object): boolean {
     const b = obj.getBoundingRect(true)
-    const right = this.paperOffsetX + this.paperPxW
-    const bottom = this.paperOffsetY + this.paperPxH
-    const intersects =
-      b.left < right &&
-      b.left + b.width > this.paperOffsetX &&
-      b.top < bottom &&
-      b.top + b.height > this.paperOffsetY
-    return intersects
+    return this.papers.some((p) => {
+      const right = p.left + mmToPx(p.widthMm)
+      const bottom = p.top + mmToPx(p.heightMm)
+      return b.left < right && b.left + b.width > p.left && b.top < bottom && b.top + b.height > p.top
+    })
+  }
+
+  /** 对象是否落在指定纸内（按纸导出时用） */
+  isObjectInPaperId(obj: fabric.Object, paperId: string): boolean {
+    const p = this.papers.find((x) => x.id === paperId)
+    if (!p) return false
+    const b = obj.getBoundingRect(true)
+    const right = p.left + mmToPx(p.widthMm)
+    const bottom = p.top + mmToPx(p.heightMm)
+    return b.left < right && b.left + b.width > p.left && b.top < bottom && b.top + b.height > p.top
   }
 
   /** 标签外对象降低不透明度：明确视觉提示"暂存/不打印"。
@@ -1069,9 +1264,21 @@ export class CanvasController {
     }
   }
 
-  /** 标签在工作区中的像素矩形(供导出裁剪) */
+  /** 标签在工作区中的像素矩形(供导出裁剪)：默认当前活动纸 */
   getPaperBoundsPx(): { left: number; top: number; width: number; height: number } {
     return { left: this.paperOffsetX, top: this.paperOffsetY, width: this.paperPxW, height: this.paperPxH }
+  }
+
+  /** 指定纸在工作区中的像素矩形（多标签按纸导出） */
+  getPaperBoundsPxFor(paperId: string): { left: number; top: number; width: number; height: number } {
+    const p = this.papers.find((x) => x.id === paperId) ?? this.activePaper
+    return { left: p.left, top: p.top, width: mmToPx(p.widthMm), height: mmToPx(p.heightMm) }
+  }
+
+  /** 指定纸的毫米尺寸（多标签 PDF 每页可能不同尺寸） */
+  paperSizeMm(paperId: string): PaperSize {
+    const p = this.papers.find((x) => x.id === paperId) ?? this.activePaper
+    return { widthMm: p.widthMm, heightMm: p.heightMm }
   }
 
   /** 工作区尺寸(像素)） */
@@ -1085,8 +1292,10 @@ export class CanvasController {
     if (!obj) return
     const c = cf(obj)
     const isText = c.kind === 'text'
-    if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) + this.paperOffsetX })
-    if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) + this.paperOffsetY })
+    // 多标签：按「对象所属纸」的原点换算——先取归属再写入，避免先移动导致归属漂移
+    const owner = this.paperFor(obj)
+    if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) + owner.left })
+    if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) + owner.top })
     if (patch.angle !== undefined) obj.set({ angle: patch.angle })
     if (patch.width !== undefined) {
       if (isText && obj instanceof fabric.Textbox) {
@@ -1726,15 +1935,27 @@ export class CanvasController {
     const spec = c._serial
     if (!spec?.enabled) return resolved
     if (SERIAL_PROBE.test(resolved)) return resolved // 已含 {{seq}}（老模板），applySeq 已处理
-    const val = this.seqValue ?? formatSeq(spec.start, Math.max(1, spec.minDigits))
+    // 批量打印中(seqIndex 有值)：按**本对象自己的** start/step 计算，
+    // 这样多张纸各自定义起始值时不会互相串号（旧实现吃全局字符串，会导致纸2 显示纸1 的号）。
+    const val =
+      this.seqIndex != null
+        ? formatSeq(spec.start + this.seqIndex * Math.max(1, spec.step), Math.max(1, spec.minDigits))
+        : (this.seqValue ?? formatSeq(spec.start, Math.max(1, spec.minDigits)))
     const m = /^(.*?)(\d+)$/.exec(resolved)
     return m ? m[1] + val : resolved + val
   }
 
 
-  /** 名称是否可用（content 对象中唯一，排除自身） */
+  /**
+   * 名称是否可用：同一张纸内唯一（排除自身）。
+   * 多标签下改为「纸内唯一」——否则第二张纸想绑定同一个表头名（如「商品名」）会被
+   * 自动改名成「商品名1」，而 bindingHeader 要求名称与表头完全一致 → 数据绑定静默失效。
+   */
   private isNameAvailable(name: string, self: fabric.Object): boolean {
-    return !this.flattenTopLevel().some((o) => o !== self && cf(o)._name === name)
+    const pid = this.paperFor(self).id
+    return !this.flattenTopLevel().some(
+      (o) => o !== self && this.paperFor(o).id === pid && cf(o)._name === name,
+    )
   }
 
   /** 内容对象的核心原文（不含前后缀） */
@@ -1782,27 +2003,33 @@ export class CanvasController {
    *  关键：对已命名且开启了序列化的对象，额外套用 finalizeSerial（末尾数字替换当前 seqValue），
    *  使 {{对象名}} 引用的对象（如条码引用序列化文本框）能逐张跟随递增。
    *  绑定到表格列的对象，其映射值取该列当前行单元格值（见 rawDesign），使跨对象引用也跟随数据。 */
-  private buildContentMap(): Map<string, string> {
+  private buildContentMap(paperId?: string): Map<string, string> {
     const map = new Map<string, string>()
     this.flattenTopLevel().forEach((o) => {
       const c = cf(o)
       if (!isContentKind(c.kind)) return
       const nm = c._name
       if (!nm) return
+      // 多标签：默认只收集「同一张纸」内的名称，避免跨纸同名互相顶掉
+      if (paperId && this.paperFor(o).id !== paperId) return
       map.set(nm, this.finalizeSerial(o, this.applySeq(this.rawDesign(c))))
     })
     return map
   }
 
-  /** 解析某对象的显示内容：序列号 → 数据列 → 跨对象名称引用（递归） */
-  private resolveDesign(design: string): string {
-    return resolveContent(this.applySeq(design), this.previewRow, this.buildContentMap(), new Set())
+  /**
+   * 解析某对象的显示内容：序列号 → 数据列 → 跨对象名称引用（递归）。
+   * 多标签时跨对象引用只在同一张纸内查找（不同纸可以有同名对象，互不影响）。
+   */
+  private resolveDesign(design: string, self?: fabric.Object): string {
+    const pid = self ? this.paperFor(self).id : undefined
+    return resolveContent(this.applySeq(design), this.previewRow, this.buildContentMap(pid), new Set())
   }
 
   /** 计算某内容对象要显示的最终文案（含前后缀/序列号/变量/跨对象/列绑定） */
   private displayContent(o: fabric.Object): string {
     const c = cf(o)
-    return this.finalizeSerial(o, this.resolveDesign(this.rawDesign(c)))
+    return this.finalizeSerial(o, this.resolveDesign(this.rawDesign(c), o))
   }
 
   /** 对外：取对象当前应显示的文案（已套用当前 seqValue/末尾数字序列化），供矢量导出使用 */
@@ -2053,9 +2280,22 @@ export class CanvasController {
     this.events.onDirty()
   }
 
-  /** 供批量打印逐张切换序列号后重绘整张 */
+  /** 供批量打印逐张切换序列号后重绘整张（老路径：直接给已格式化的字符串） */
   setSeqValue(value: string | null) {
     this.seqValue = value
+    this.seqIndex = null
+    this.refreshAllContent()
+  }
+
+  /**
+   * 供批量打印逐张切换页码后重绘整张（新路径，多标签必须走这个）。
+   * 传页码而非字符串：每个序列化对象按自己的 start/step/minDigits 计算显示值，
+   * 于是不同纸可以有不同起始值而互不串号。
+   */
+  setSeqIndex(index: number | null) {
+    this.seqIndex = index
+    // {{seq}} 是全局占位符，仍用统一字符串（按首个序列化配置格式化）
+    this.seqValue = index == null ? null : this.seqLabelFor(index)
     this.refreshAllContent()
   }
 
@@ -2064,7 +2304,7 @@ export class CanvasController {
     const type = c._barcodeType ?? 'code128'
     const settings = c._barcodeSettings ?? defaultSettingsFor(type)
     // 显示文案 = 前后缀 + 原文 + 序列/列/跨对象解析（序列化对象再套末尾数字）
-    const text = this.finalizeSerial(obj, this.resolveDesign(this.decoratedDesign(c)))
+    const text = this.finalizeSerial(obj, this.resolveDesign(this.decoratedDesign(c), obj))
     try {
       renderBarcodeVectorRects(type, text, settings) // 校验内容合法性（不合法则保留上一帧）
     } catch {
@@ -2112,6 +2352,11 @@ export class CanvasController {
     // 序列化时剔除 viewportTransform,避免把屏幕缩放/平移写进模板,导入后视图由 App 重新设定
     const data = this.canvas.toJSON() as Record<string, unknown>
     delete (data as { viewportTransform?: unknown }).viewportTransform
+    // 纸卡是渲染产物：不进模板（载入时按 papers 重建），否则每次往返都会多叠一层白底
+    const objs = Array.isArray(data.objects) ? (data.objects as Array<Record<string, unknown>>) : []
+    data.objects = objs.filter((o) => !o.excludeFromExport)
+    // 多标签：纸张布局（含各自尺寸与位置）随模板保存
+    data._papers = this.papers.map((p) => ({ ...p }))
     return data
   }
 
@@ -2120,8 +2365,8 @@ export class CanvasController {
    * 导出时临时把画布切回工作区尺寸 + identity 视口变换(绕开屏幕缩放/视口裁剪),
    * 导出后恢复当前视口。供栅格 PNG / 打印 / 批量序列化截图复用。
    */
-  toPaperDataUrl(scale = 3): string {
-    const paper = this.getPaperBoundsPx()
+  toPaperDataUrl(scale = 3, paperId?: string): string {
+    const paper = paperId ? this.getPaperBoundsPxFor(paperId) : this.getPaperBoundsPx()
     const prevVpt = (this.canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]).slice() as unknown as number[]
     const prevW = this.viewW
     const prevH = this.viewH
@@ -2222,6 +2467,27 @@ export class CanvasController {
     this._suppressDirty = true
     this.canvas.loadFromJSON(json, () => {
       const objs = this.canvas.getObjects()
+      // 多标签：优先恢复模板里的纸张布局；旧模板无 _papers 时保持当前单纸不变
+      const saved = (json as { _papers?: unknown })._papers
+      if (Array.isArray(saved) && saved.length > 0) {
+        const restored: PaperArea[] = []
+        for (const raw of saved as Array<Record<string, unknown>>) {
+          if (typeof raw.id !== 'string' || typeof raw.widthMm !== 'number') continue
+          restored.push({
+            id: raw.id,
+            name: typeof raw.name === 'string' ? raw.name : '标签',
+            widthMm: raw.widthMm,
+            heightMm: typeof raw.heightMm === 'number' ? raw.heightMm : raw.widthMm,
+            left: typeof raw.left === 'number' ? raw.left : mmToPx(WORKSPACE_MARGIN_MM),
+            top: typeof raw.top === 'number' ? raw.top : mmToPx(WORKSPACE_MARGIN_MM),
+          })
+        }
+        if (restored.length > 0) {
+          this.papers = restored
+          this.activePaperIdValue = restored[0].id
+          this.resizeWorkspace()
+        }
+      }
       this.restoreRecursive(objs, srcObjs)
       // 矢量条码组：JSON 里不含模块矩形，按元数据重建几何；
       // 旧模板的位图 Image 条码原样保留（兼容）。
@@ -2232,7 +2498,7 @@ export class CanvasController {
         }
       }
       // 载入后重建"纸卡"背景 + 刷新纸外对象的半透明视觉
-      this.recreatePaperRect()
+      this.recreatePaperRects()
       for (const o of this.canvas.getObjects()) if (!(o as { excludeFromExport?: boolean }).excludeFromExport) this.updateOutsidePaperVisual(o)
       this.refreshAllContent()
       // 导入后保持当前视口(避免模板里残留的视图变换影响显示)
@@ -2248,7 +2514,7 @@ export class CanvasController {
     this.canvas.clear()
     // 清空后重建"纸卡"背景 + 恢复工作区底色
     this.canvas.backgroundColor = '#e2e8f0'
-    this.recreatePaperRect()
+    this.recreatePaperRects()
     this.canvas.requestRenderAll()
     this.events.onDirty()
     this.events.onActiveChange(null)

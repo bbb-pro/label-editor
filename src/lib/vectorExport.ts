@@ -10,7 +10,7 @@
 // - 旋转：文本用 jsPDF text({angle})，图形绕中心旋转后描点。
 import jsPDF from 'jspdf'
 import { Font } from 'fonteditor-core'
-import type { PaperSize, DataRow } from '@/types/template'
+import type { PaperOrder, PaperSize, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
 import { pxToPt } from '@/lib/textStyles'
@@ -29,6 +29,10 @@ export interface VectorPdfOptions {
   onProgress?: (done: number, total: number) => void
   /** 按表格行批量导出：传入要打印的数据行，每页切换一次预览行（文本框名称=表头时自动取该列值） */
   rows?: DataRow[]
+  /** 多标签页序：set=按套(A1 B1 A2 B2)，paper=按标签(A1 A2 B1 B2) */
+  order?: PaperOrder
+  /** 打印范围：true=只输出当前活动标签，false/缺省=全部标签 */
+  onlyActive?: boolean
 }
 
 /** fabric 自带的辅助：1/1000 em → 毫米的缩放系数由字号决定，见使用处 */
@@ -617,34 +621,56 @@ export async function exportVectorPdf(
   paper: PaperSize,
   options: VectorPdfOptions = {},
 ): Promise<void> {
-  const { copies = 1, name = '标签', onProgress, rows } = options
+  const { copies = 1, name = '标签', onProgress, rows, order = 'set', onlyActive = false } = options
   const canvas = controller.canvas
   if (canvas.getObjects().length === 0) return
 
-  // 坐标原点平移到「纸张左上角」：leafBox 用工作区坐标，而 PDF 页面尺寸只等于纸张
-  const pb = controller.getPaperBoundsPx()
-  originX = pb.left
-  originY = pb.top
+  const all = controller.listPapers()
+  // onlyActive：只输出当前活动标签
+  const papers = onlyActive && all.length > 1
+    ? (() => {
+        const a = all.find((p) => p.id === controller.activePaperId())
+        return a ? [a] : all
+      })()
+    : all
+  const paperCount = Math.max(1, papers.length)
 
   const rowMode = !!(rows && rows.length > 0)
   const serialActive = !rowMode && controller.hasActiveSerial()
-  const pageCount = rowMode ? rows!.length : serialActive ? Math.max(1, Math.floor(copies)) : 1
+  const seqCount = Math.max(1, Math.floor(copies))
+  const rowCount = Math.max(1, rows?.length ?? 1)
+  // 每张纸要出的份数（数据行模式=行数，序列化模式=份数，都没有=1）
+  const perPaper = rowMode ? rowCount : serialActive ? seqCount : 1
+  const pageCount = perPaper * paperCount
   const prevSeq = controller.seqValue
+
+  /** 第 p 页 → 哪张纸 + 第几个值。set=按套(A1 B1 A2 B2)，paper=按标签(A1 A2 B1 B2) */
+  const slotOf = (p: number) =>
+    order === 'set'
+      ? { paperIdx: p % paperCount, index: Math.floor(p / paperCount) }
+      : { paperIdx: Math.floor(p / perPaper), index: p % perPaper }
+  const applyState = (index: number) => {
+    if (rowMode) controller.setPreviewRow(rows![Math.min(index, rows!.length - 1)] ?? null)
+    else if (serialActive) controller.setSeqIndex(index)
+  }
 
   // 收集全部页文本 → 一次性子集字体
   const textPool: string[] = []
   for (let p = 0; p < pageCount; p++) {
-    if (rowMode) controller.setPreviewRow(rows![p])
-    else if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
+    applyState(slotOf(p).index)
     textPool.push(pageChars(controller))
   }
   if (rowMode) controller.setPreviewRow(null)
   else if (serialActive) controller.setSeqValue(prevSeq)
 
+  // 首页尺寸用第一张纸（后续每页按各自纸张尺寸 addPage）
+  const firstSize: PaperSize = papers[0]
+    ? { widthMm: papers[0].widthMm, heightMm: papers[0].heightMm }
+    : paper
   const doc = new jsPDF({
-    orientation: paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait',
+    orientation: firstSize.widthMm >= firstSize.heightMm ? 'landscape' : 'portrait',
     unit: 'mm',
-    format: [paper.widthMm, paper.heightMm],
+    format: [firstSize.widthMm, firstSize.heightMm],
     compress: true,
   })
 
@@ -660,12 +686,22 @@ export async function exportVectorPdf(
   if (hadSel) canvas.discardActiveObject()
   try {
     for (let p = 0; p < pageCount; p++) {
+      const { paperIdx, index } = slotOf(p)
+      const pa = papers[Math.min(paperIdx, papers.length - 1)]
+      const sizeMm: PaperSize = pa ? { widthMm: pa.widthMm, heightMm: pa.heightMm } : paper
+      // 坐标原点平移到「本页这张纸」的左上角（leafBox 用的是工作区坐标）
+      const pb = pa ? controller.getPaperBoundsPxFor(pa.id) : controller.getPaperBoundsPx()
+      originX = pb.left
+      originY = pb.top
       if (p > 0) {
-        doc.addPage([paper.widthMm, paper.heightMm], paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait')
+        doc.addPage([sizeMm.widthMm, sizeMm.heightMm], sizeMm.widthMm >= sizeMm.heightMm ? 'landscape' : 'portrait')
       }
-      if (rowMode) controller.setPreviewRow(rows![p])
-      else if (serialActive) controller.setSeqValue(controller.seqLabelFor(p))
-      for (const o of flattenLeaves(controller)) await drawLeaf(doc, o, controller)
+      applyState(index)
+      for (const o of flattenLeaves(controller)) {
+        // 只画落在本页这张纸内的对象，避免把别的标签内容画进来
+        if (pa && !controller.isObjectInPaperId(o, pa.id)) continue
+        await drawLeaf(doc, o, controller)
+      }
       onProgress?.(p + 1, pageCount)
     }
   } finally {

@@ -9,9 +9,10 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Hash } from 'lucide-react'
+import { Hash, Layers, ArrowLeftRight } from 'lucide-react'
 import { formatSeq } from '@/lib/canvasEngine'
 import type { SerialSpec } from '@/types/editor'
+import type { PaperOrder } from '@/types/template'
 
 interface BatchDialogProps {
   open: boolean
@@ -34,6 +35,16 @@ interface BatchDialogProps {
   rowsMode?: boolean
   /** 数据总行数（rowsMode 时作为上限与预览用） */
   totalRows?: number
+  /** 工作区里的标签数量（>1 时才显示页序/范围选项） */
+  paperCount?: number
+  /** 当前标签名（范围选项显示用） */
+  activePaperName?: string
+  /** 多标签页序：set=按套 / paper=按标签 */
+  order?: PaperOrder
+  onOrderChange?: (v: PaperOrder) => void
+  /** 打印范围：true=仅当前标签 */
+  onlyActive?: boolean
+  onOnlyActiveChange?: (v: boolean) => void
   onConfirm: (copies: number) => void
 }
 
@@ -49,6 +60,12 @@ export default function BatchDialog({
   busy = false,
   rowsMode = false,
   totalRows = 0,
+  paperCount = 1,
+  activePaperName = '',
+  order = 'set',
+  onOrderChange,
+  onlyActive = false,
+  onOnlyActiveChange,
   onConfirm,
 }: BatchDialogProps) {
   const [copies, setCopies] = useState(String(defaultCopies))
@@ -108,6 +125,77 @@ export default function BatchDialog({
               className="h-8 w-full rounded-md border bg-background px-2 text-xs tabular-nums focus:outline-none focus:ring-2 focus:ring-ring/40"
             />
           </label>
+          {/* 多标签：打印范围 + 页序 */}
+          {paperCount > 1 && (
+            <div className="space-y-2 rounded-md border bg-muted/40 p-2">
+              <div className="space-y-1">
+                <span className="text-[11px] font-medium text-foreground">打印范围</span>
+                <div className="flex gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onOnlyActiveChange?.(false)}
+                    className={
+                      'flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[11px] transition-colors ' +
+                      (onlyActive
+                        ? 'border-transparent bg-background text-muted-foreground hover:bg-accent'
+                        : 'border-primary bg-primary text-primary-foreground')
+                    }
+                  >
+                    <Layers className="h-3 w-3" />
+                    全部标签（{paperCount}）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOnlyActiveChange?.(true)}
+                    className={
+                      'flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[11px] transition-colors ' +
+                      (onlyActive
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'border-transparent bg-background text-muted-foreground hover:bg-accent')
+                    }
+                  >
+                    仅「{activePaperName || '当前'}」
+                  </button>
+                </div>
+              </div>
+              {!onlyActive && (
+                <div className="space-y-1">
+                  <span className="text-[11px] font-medium text-foreground">页序</span>
+                  <div className="flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onOrderChange?.('set')}
+                      className={
+                        'flex flex-1 items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-[11px] transition-colors ' +
+                        (order === 'set'
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-transparent bg-background text-muted-foreground hover:bg-accent')
+                      }
+                    >
+                      <ArrowLeftRight className="h-3 w-3" />
+                      按套 A1 B1 A2 B2
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onOrderChange?.('paper')}
+                      className={
+                        'flex flex-1 items-center justify-center rounded-md border px-2 py-1.5 text-[11px] transition-colors ' +
+                        (order === 'paper'
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-transparent bg-background text-muted-foreground hover:bg-accent')
+                      }
+                    >
+                      按标签 A1 A2 B1 B2
+                    </button>
+                  </div>
+                  <p className="text-[10px] leading-relaxed text-muted-foreground">
+                    按套：一箱货配好几张，打印出来天然成套。按标签：先打完一种再换纸，适合尺寸不同分批贴。
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {rowPreview && (
             <p className="rounded-md bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">
               将打印第 <b className="font-mono">1</b> 行 ~ 第 <b className="font-mono">{rowPreview.to}</b> 行，共 {rowPreview.to} 张（共 {rowPreview.total} 行数据）。

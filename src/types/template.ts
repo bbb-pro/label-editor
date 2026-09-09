@@ -15,6 +15,23 @@ export interface PaperSize {
 /** 新建/清空画布时的默认纸张尺寸（单一事实来源：App 初始化 + 面板提示共用） */
 export const DEFAULT_PAPER: PaperSize = { widthMm: 150, heightMm: 100 }
 
+/**
+ * 工作区里的一张「标签纸」（多标签编辑：同一个工作区可有多张纸，纵向排列）。
+ * 坐标 left/top 是**工作区绝对像素**，由引擎维护；序列化时随模板保存。
+ */
+export interface PaperArea {
+  id: string
+  /** 用户可见名称，如「标签 1」 */
+  name: string
+  widthMm: number
+  heightMm: number
+  left: number
+  top: number
+}
+
+/** 多标签批量输出时的页序：按套（A1 B1 A2 B2）/ 按标签（A1 A2 B1 B2） */
+export type PaperOrder = 'set' | 'paper'
+
 /** 工具类型（左侧工具条触发指令，与元素 kind 解耦） */
 export type ToolType =
   | 'text'

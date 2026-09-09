@@ -18,11 +18,12 @@ import {
   printBatch,
   renderSeqPages,
   renderRowPages,
-  canvasToHighResDataUrl,
+  renderAllPapers,
+  renderCurrentPage,
 } from '@/lib/export'
 import { exportVectorPdf } from '@/lib/vectorExport'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
-import type { PaperSize, DataRow, ToolType } from '@/types/template'
+import type { PaperArea, PaperOrder, PaperSize, DataRow, ToolType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec } from '@/types/editor'
@@ -41,6 +42,8 @@ import {
   ArrowDown,
   Magnet,
   Unlock,
+  Plus,
+  Trash2,
 } from 'lucide-react'
 
 /** 批量渲染默认份数 */
@@ -75,6 +78,13 @@ export default function App() {
   const [batchMode, setBatchMode] = useState<'print' | 'pdf' | 'png' | null>(null)
   const [batchKind, setBatchKind] = useState<'rows' | 'copies'>('copies')
   const [batchBusy, setBatchBusy] = useState(false)
+  /** 多标签批量输出页序：set=按套(A1 B1 A2 B2) / paper=按标签(A1 A2 B1 B2) */
+  const [paperOrder, setPaperOrder] = useState<PaperOrder>('set')
+  /** 多标签打印范围：true=只输出当前活动标签 */
+  const [onlyActivePaper, setOnlyActivePaper] = useState(false)
+  /** 工作区里的多张标签纸（与引擎同步，用于标签条 UI） */
+  const [papers, setPapers] = useState<PaperArea[]>([])
+  const [activePaperId, setActivePaperIdState] = useState('')
   /** 画布上生效的序列化配置（用于批量对话框预览） */
   const [activeSerial, setActiveSerial] = useState<SerialSpec | null>(null)
   /** 多选/编组状态（count≥2 多对象、isGroup 单个编组整体、isBarcodeGroup 单个条码组） */
@@ -114,14 +124,38 @@ export default function App() {
         setUsedVariables(ctrl.collectUsedVariables())
         setObjectNames(ctrl.collectContentNames())
         setActiveSerial(ctrl.firstSerial())
+        // 多标签：纸张列表/当前纸同步（内容一致时不触发重渲染）
+        setPapers((prev) => {
+          const next = ctrl.listPapers()
+          const same =
+            prev.length === next.length &&
+            prev.every(
+              (p, i) =>
+                p.id === next[i].id &&
+                p.name === next[i].name &&
+                p.widthMm === next[i].widthMm &&
+                p.heightMm === next[i].heightMm &&
+                p.left === next[i].left &&
+                p.top === next[i].top,
+            )
+          return same ? prev : next
+        })
+        setActivePaperIdState(ctrl.activePaperId())
+        // 面板里的「纸张宽/高」跟随当前活动标签，切换标签后显示对应尺寸
+        const ap = ctrl.listPapers().find((p) => p.id === ctrl.activePaperId())
+        if (ap) {
+          setPaper((prev) =>
+            prev.widthMm === ap.widthMm && prev.heightMm === ap.heightMm
+              ? prev
+              : { widthMm: ap.widthMm, heightMm: ap.heightMm },
+          )
+        }
       },
     })
     ctrlRef.current = ctrl
     if (import.meta.env.DEV) (window as unknown as { __appCtrl?: CanvasController }).__appCtrl = ctrl
     // 把 canvas 设为视口大小(替代旧方案"整张工作区 + CSS 缩放");缩放/平移改由 fabric viewportTransform 承担
     ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
-    setObjectCount(0)
-    setObjectCount(0)
     setObjectCount(0)
 
     // fabric 会把 canvas 包进 .canvas-container，保存引用用于 CSS 缩放
@@ -249,6 +283,21 @@ export default function App() {
     setPanView(p.x, p.y)
     applyZoom(zz)
   }, [applyZoom, setPanView, panForCenteredPaper])
+
+  /** 把视口平移到指定纸的中心（保持当前缩放），切换标签时用 */
+  const focusPaper = useCallback(
+    (paperId: string) => {
+      const ctrl = ctrlRef.current
+      if (!ctrl) return
+      const vp = ctrl.getViewportSize()
+      const b = ctrl.getPaperBoundsPxFor(paperId)
+      const cx = b.left + b.width / 2
+      const cy = b.top + b.height / 2
+      const z = zoomRef.current
+      setPanView(vp.width / 2 - cx * z, vp.height / 2 - cy * z)
+    },
+    [setPanView],
+  )
 
   /**
    * 以「当前视口中心」为锚点缩放：放大/缩小按钮应让画面中心保持不动，
@@ -832,6 +881,8 @@ export default function App() {
           await exportVectorPdf(ctrl, paper, {
             copies: ctrl.hasActiveSerial() && !rowMode ? copies : 1,
             rows: rowMode ? rowPages : undefined,
+            order: paperOrder,
+            onlyActive: onlyActivePaper,
             onProgress: (done, total) => {
               if (done % 10 === 0 || done === total) toast.message(`正在生成矢量 PDF ${done}/${total}…`)
             },
@@ -841,16 +892,18 @@ export default function App() {
           const pages = rowMode
             ? await renderRowPages(ctrl, rowPages, 3, (done, total) => {
                 if (done % 10 === 0 || done === total) toast.message(`正在渲染 ${done}/${total} 张…`)
-              })
+              }, paperOrder, onlyActivePaper)
             : ctrl.hasActiveSerial()
               ? await renderSeqPages(ctrl, copies, 3, (done, total) => {
                   if (done % 10 === 0 || done === total) {
                     toast.message(`正在渲染 ${done}/${total} 张…`)
                   }
-                })
-              : [canvasToHighResDataUrl(ctrl, 3)]
+                }, paperOrder, onlyActivePaper)
+              : onlyActivePaper
+                ? [renderCurrentPage(ctrl, 3)]
+                : renderAllPapers(ctrl, 3)
           if (mode === 'print') {
-            await printBatch(pages, paper)
+            await printBatch(pages)
             toast.success(`已提交 ${pages.length} 张到打印`)
           } else {
             exportPngPages(pages, '标签')
@@ -866,7 +919,7 @@ export default function App() {
         setBatchMode(null)
       }
     },
-    [paper, rows],
+    [paper, paperOrder, rows, onlyActivePaper],
   )
 
   const onPrint = useCallback(() => {
@@ -886,8 +939,9 @@ export default function App() {
       setBatchMode('print')
       return
     }
-    void printCanvas(ctrl, paper)
-  }, [paper, rows])
+    // 多标签：无序列化/无数据时每张纸各打一页
+    void printCanvas(ctrl)
+  }, [rows])
 
   const onExportPng = useCallback(() => {
     const ctrl = ctrlRef.current
@@ -906,9 +960,15 @@ export default function App() {
       setBatchMode('png')
       return
     }
+    // 多标签：每张纸各导出一张 PNG
+    if (papers.length > 1) {
+      exportPngPages(renderAllPapers(ctrl, 3))
+      toast.success(`已导出 ${papers.length} 张 PNG`)
+      return
+    }
     void exportPng(ctrl)
     toast.success('PNG 已导出')
-  }, [rows])
+  }, [rows, papers.length])
 
   const onExportPdf = useCallback(() => {
     const ctrl = ctrlRef.current
@@ -927,7 +987,7 @@ export default function App() {
       setBatchMode('pdf')
       return
     }
-    void exportVectorPdf(ctrl, paper, { copies: 1 }).catch((err) =>
+    void exportVectorPdf(ctrl, paper, { copies: 1, order: paperOrder }).catch((err) =>
       toast.error('PDF 导出失败', {
         description: err instanceof Error ? err.message : '请重试',
       }),
@@ -1093,6 +1153,67 @@ export default function App() {
           }}
         >
           <canvas ref={canvasElRef} className="shadow-xl ring-1 ring-black/10" />
+
+          {/* 多标签条：同一个文件里做几种标签（新建 / 切换 / 删除） */}
+          <div
+            className={
+              'absolute left-2 z-30 flex max-w-[calc(100%-7rem)] items-center gap-1 overflow-x-auto rounded-lg border bg-white/95 p-1 shadow-md ' +
+              (isCompact ? 'top-16' : 'top-2')
+            }
+          >
+            {papers.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                title={`切换到${p.name}（${p.widthMm}×${p.heightMm}mm，双击可重命名）`}
+                onClick={() => {
+                  ctrlRef.current?.setActivePaper(p.id)
+                  focusPaper(p.id)
+                }}
+                onDoubleClick={() => {
+                  const next = window.prompt('重命名标签', p.name)
+                  if (next && next.trim()) ctrlRef.current?.renamePaper(p.id, next.trim())
+                }}
+                className={
+                  'whitespace-nowrap rounded-md px-2 py-1 text-[11px] transition-colors ' +
+                  (p.id === activePaperId
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-accent')
+                }
+              >
+                {p.name}
+              </button>
+            ))}
+            <button
+              type="button"
+              title="在当前标签下方新建一张"
+              onClick={() => {
+                const id = ctrlRef.current?.addPaper()
+                if (id) focusPaper(id)
+                fitToView()
+              }}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+            {papers.length > 1 && (
+              <button
+                type="button"
+                title="删除当前标签（该标签上的内容会一起删除）"
+                onClick={() => {
+                  const ctrl = ctrlRef.current
+                  const cur = papers.find((p) => p.id === activePaperId)
+                  if (!ctrl || !cur) return
+                  if (!window.confirm(`删除「${cur.name}」？该标签上的内容会一起删除。`)) return
+                  ctrl.removePaper(cur.id)
+                  fitToView()
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
 
           {/* 画布视口浮层：手抓平移开关 */}
           <div className={'absolute right-2 z-30 flex flex-col items-stretch gap-1 overflow-hidden rounded-lg border bg-white/95 p-1 shadow-md ' + (isCompact ? 'top-16' : 'top-2')}>
@@ -1376,6 +1497,12 @@ export default function App() {
         }
         serial={activeSerial}
         busy={batchBusy}
+        paperCount={papers.length}
+        activePaperName={papers.find((p) => p.id === activePaperId)?.name ?? ''}
+        order={paperOrder}
+        onOrderChange={setPaperOrder}
+        onlyActive={onlyActivePaper}
+        onOnlyActiveChange={setOnlyActivePaper}
         onConfirm={(copies) => {
           if (batchMode) void runBatch(batchMode, copies)
         }}

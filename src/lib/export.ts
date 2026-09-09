@@ -1,7 +1,27 @@
 // 输出：模板 JSON 下载、PNG、PDF、浏览器打印
 import jsPDF from 'jspdf'
-import type { PaperSize, LabelTemplate, DataRow } from '@/types/template'
+import type { PaperArea, PaperOrder, PaperSize, LabelTemplate, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
+
+/** 渲染好的一页：图 + 该页实际毫米尺寸（多标签时每页尺寸可能不同） */
+export interface RenderedPage {
+  url: string
+  widthMm: number
+  heightMm: number
+}
+
+/**
+ * 多标签页序换算：第 p 页（0 起）对应哪张纸 + 第几个序号。
+ * - set 按套：[A1 B1 A2 B2]（打印出来天然成套，适合一箱货配多张）
+ * - paper 按标签：[A1 A2 B1 B2]（先打完一种，适合尺寸不同要换纸 / 分批贴）
+ */
+function pageSlot(p: number, copies: number, paperCount: number, order: PaperOrder) {
+  const c = Math.max(1, copies)
+  const n = Math.max(1, paperCount)
+  return order === 'set'
+    ? { paperIdx: p % n, index: Math.floor(p / n) }
+    : { paperIdx: Math.floor(p / c), index: p % c }
+}
 
 function download(dataUrlOrBlob: Blob | string, filename: string) {
   const url = typeof dataUrlOrBlob === 'string' ? dataUrlOrBlob : URL.createObjectURL(dataUrlOrBlob)
@@ -18,8 +38,43 @@ function download(dataUrlOrBlob: Blob | string, filename: string) {
 export function canvasToHighResDataUrl(
   controller: CanvasController,
   scale = 2,
+  paperId?: string,
 ): string {
-  return controller.toPaperDataUrl(scale)
+  return controller.toPaperDataUrl(scale, paperId)
+}
+
+/**
+ * 参与输出的纸张列表。
+ * - 全部标签：按工作区里的顺序
+ * - 仅当前标签：只输出活动纸（用于「先只打这一张」）
+ */
+function pickPapers(controller: CanvasController, onlyActive: boolean): PaperArea[] {
+  const all = controller.listPapers()
+  if (!onlyActive || all.length <= 1) return all
+  const active = all.find((p) => p.id === controller.activePaperId())
+  return active ? [active] : all
+}
+
+/** 每张纸各渲染一页（多标签：无序列化/无数据绑定时的一次性输出） */
+export function renderAllPapers(controller: CanvasController, scale = 3): RenderedPage[] {
+  return controller.listPapers().map((p) => ({
+    url: controller.toPaperDataUrl(scale, p.id),
+    widthMm: p.widthMm,
+    heightMm: p.heightMm,
+  }))
+}
+
+/** 当前活动纸渲染成一页（单张导出用） */
+export function renderCurrentPage(
+  controller: CanvasController,
+  scale = 3,
+): RenderedPage {
+  const p = controller.listPapers().find((x) => x.id === controller.activePaperId())
+  return {
+    url: controller.toPaperDataUrl(scale, p?.id),
+    widthMm: p?.widthMm ?? 0,
+    heightMm: p?.heightMm ?? 0,
+  }
 }
 
 export function exportJson(
@@ -51,11 +106,11 @@ export async function exportPng(controller: CanvasController, name = '标签') {
 }
 
 /** 批量把若干张 PNG 依次下载成独立文件（序列化多张场景） */
-export function exportPngPages(pages: string[], name = '标签') {
-  pages.forEach((src, i) => {
+export function exportPngPages(pages: RenderedPage[], name = '标签') {
+  pages.forEach((pg, i) => {
     // 逐个下载，稍延时以免浏览器拦截连续下载
     const n = i > 0 ? i + 1 : ''
-    download(src, `${name}${n}.png`)
+    download(pg.url, `${name}${n}.png`)
   })
 }
 
@@ -70,23 +125,35 @@ export async function renderSeqPages(
   copies: number,
   scale = 3,
   onProgress?: (done: number, total: number) => void,
-): Promise<string[]> {
-  const pages: string[] = []
-  const total = Math.max(1, copies)
+  order: PaperOrder = 'set',
+  onlyActive = false,
+): Promise<RenderedPage[]> {
+  const papers = pickPapers(controller, onlyActive)
+  const paperCount = Math.max(1, papers.length)
+  const copiesSafe = Math.max(1, copies)
+  const pages: RenderedPage[] = []
+  const total = copiesSafe * paperCount
   // 截图前临时脱开选中，避免把蓝色选择框/控制点截进 PDF
   const canvas = controller.canvas
   const prevActive = canvas.getActiveObject()
   const prevSelection = prevActive ? true : false
   if (prevSelection) canvas.discardActiveObject()
   try {
-    for (let i = 0; i < total; i++) {
-      controller.setSeqValue(controller.seqLabelFor(i))
+    for (let p = 0; p < total; p++) {
+      const { paperIdx, index } = pageSlot(p, copiesSafe, paperCount, order)
+      const paper = papers[Math.min(paperIdx, papers.length - 1)]
+      // 传页码而非字符串：每个序列化对象按自己的 start/step 计算，多纸可各有起始值
+      controller.setSeqIndex(index)
       await controller.whenIdle()
-      pages.push(canvasToHighResDataUrl(controller, scale))
-      onProgress?.(i + 1, total)
+      pages.push({
+        url: canvasToHighResDataUrl(controller, scale, paper?.id),
+        widthMm: paper?.widthMm ?? 0,
+        heightMm: paper?.heightMm ?? 0,
+      })
+      onProgress?.(p + 1, total)
     }
     // 还原：回到设计态预览
-    controller.setSeqValue(null)
+    controller.setSeqIndex(null)
     await controller.whenIdle()
   } finally {
     // 恢复选中，避免破坏用户连续编辑流程
@@ -109,19 +176,30 @@ export async function renderRowPages(
   rows: DataRow[],
   scale = 3,
   onProgress?: (done: number, total: number) => void,
-): Promise<string[]> {
-  const pages: string[] = []
-  const total = Math.max(1, rows.length)
+  order: PaperOrder = 'set',
+  onlyActive = false,
+): Promise<RenderedPage[]> {
+  const papers = pickPapers(controller, onlyActive)
+  const paperCount = Math.max(1, papers.length)
+  const rowCount = Math.max(1, rows.length)
+  const pages: RenderedPage[] = []
+  const total = rowCount * paperCount
   const canvas = controller.canvas
   const prevActive = canvas.getActiveObject()
   const prevSelection = prevActive ? true : false
   if (prevSelection) canvas.discardActiveObject()
   try {
-    for (let i = 0; i < total; i++) {
-      controller.setPreviewRow(rows[i])
+    for (let p = 0; p < total; p++) {
+      const { paperIdx, index } = pageSlot(p, rowCount, paperCount, order)
+      const paper = papers[Math.min(paperIdx, papers.length - 1)]
+      controller.setPreviewRow(rows[Math.min(index, rows.length - 1)] ?? null)
       await controller.whenIdle()
-      pages.push(canvasToHighResDataUrl(controller, scale))
-      onProgress?.(i + 1, total)
+      pages.push({
+        url: canvasToHighResDataUrl(controller, scale, paper?.id),
+        widthMm: paper?.widthMm ?? 0,
+        heightMm: paper?.heightMm ?? 0,
+      })
+      onProgress?.(p + 1, total)
     }
     controller.setPreviewRow(null)
     await controller.whenIdle()
@@ -139,22 +217,25 @@ export function exportPdf(controller: CanvasController, paper: PaperSize, name =
   const prev = canvas.getActiveObject()
   const hadSel = !!prev
   if (hadSel) canvas.discardActiveObject()
+  // 多标签：以「当前活动纸」的实际尺寸建页（各纸尺寸可以不同）
+  const cur = controller.listPapers().find((p) => p.id === controller.activePaperId())
+  const size: PaperSize = cur ? { widthMm: cur.widthMm, heightMm: cur.heightMm } : paper
   // 同步截取（已脱开选中，避免蓝色选择框/控制点进 PDF）
-  const dataUrl = canvasToHighResDataUrl(controller, 2)
+  const dataUrl = canvasToHighResDataUrl(controller, 2, cur?.id)
   if (hadSel && prev) {
     canvas.setActiveObject(prev)
     canvas.requestRenderAll()
   }
   // jsPDF 默认单位 mm，按纸张实际 mm 建页
   const doc = new jsPDF({
-    orientation: paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait',
+    orientation: size.widthMm >= size.heightMm ? 'landscape' : 'portrait',
     unit: 'mm',
-    format: [paper.widthMm, paper.heightMm],
+    format: [size.widthMm, size.heightMm],
     compress: true,
   })
   const img = new Image()
   img.onload = () => {
-    doc.addImage(img, 'PNG', 0, 0, paper.widthMm, paper.heightMm)
+    doc.addImage(img, 'PNG', 0, 0, size.widthMm, size.heightMm)
     doc.save(`${name}.pdf`)
   }
   img.src = dataUrl
@@ -164,35 +245,34 @@ export function exportPdf(controller: CanvasController, paper: PaperSize, name =
  * 批量导出 PDF：pages 为每页高清图（序号已递增），一页一张。
  * 顺序加载图片并 addImage，避免并发 onload 导致页序错乱/空白。
  */
-export async function exportBatchPdf(
-  pages: string[],
-  paper: PaperSize,
-  name = '标签',
-): Promise<void> {
+export async function exportBatchPdf(pages: RenderedPage[], name = '标签'): Promise<void> {
   if (pages.length === 0) throw new Error('没有可导出的页')
+  const first = pages[0]
   const doc = new jsPDF({
-    orientation: paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait',
+    orientation: first.widthMm >= first.heightMm ? 'landscape' : 'portrait',
     unit: 'mm',
-    format: [paper.widthMm, paper.heightMm],
+    format: [first.widthMm, first.heightMm],
     compress: true,
   })
   for (let i = 0; i < pages.length; i++) {
-    if (i > 0) doc.addPage([paper.widthMm, paper.heightMm], paper.widthMm >= paper.heightMm ? 'landscape' : 'portrait')
+    const pg = pages[i]
+    // 每页用各自尺寸：多标签各纸尺寸不同也能正确成页
+    if (i > 0) doc.addPage([pg.widthMm, pg.heightMm], pg.widthMm >= pg.heightMm ? 'landscape' : 'portrait')
     await new Promise<void>((resolve) => {
       const img = new Image()
       img.onload = () => {
-        doc.addImage(img, 'PNG', 0, 0, paper.widthMm, paper.heightMm)
+        doc.addImage(img, 'PNG', 0, 0, pg.widthMm, pg.heightMm)
         resolve()
       }
       img.onerror = () => resolve() // 失败跳过该页，避免整个导出阻塞
-      img.src = pages[i]
+      img.src = pg.url
     })
   }
   doc.save(`${name}.pdf`)
 }
 
-/** 动态注入 @page 尺寸，让浏览器打印纸型跟随标签实际大小 */
-function applyPrintPageSize(paper: PaperSize) {
+/** 动态注入 @page 尺寸，让浏览器打印纸型跟随标签实际大小（传 null 表示不限制，交回打印机） */
+function applyPrintPageSize(paper: PaperSize | null) {
   const id = '__label-print-page-size'
   let el = document.getElementById(id) as HTMLStyleElement | null
   if (!el) {
@@ -200,7 +280,7 @@ function applyPrintPageSize(paper: PaperSize) {
     el.id = id
     document.head.appendChild(el)
   }
-  el.textContent = `@page{size:${paper.widthMm}mm ${paper.heightMm}mm;margin:0}`
+  el.textContent = paper ? `@page{size:${paper.widthMm}mm ${paper.heightMm}mm;margin:0}` : ''
 }
 
 /** 取（或建）屏外打印容器 */
@@ -220,17 +300,23 @@ function printHost(sheetId: string): HTMLDivElement {
 }
 
 /** 把若干张高清图放进屏外容器，等全部加载完再触发一次 window.print（每张一页） */
-function printPages(pages: string[], paper: PaperSize, sheetId = 'print-area'): Promise<void> {
-  // 关键：让打印对话框的纸型跟随标签实际尺寸（若用户选“适合页面/自动”）
-  applyPrintPageSize(paper)
+function printPages(pages: RenderedPage[], sheetId = 'print-area'): Promise<void> {
+  // @page 只能有一个尺寸：所有页同尺寸时才注入，混尺寸打印时交给浏览器/打印机处理
+  const first = pages[0]
+  const sameSize =
+    !!first &&
+    pages.every(
+      (p) => Math.abs(p.widthMm - first.widthMm) < 0.01 && Math.abs(p.heightMm - first.heightMm) < 0.01,
+    )
+  applyPrintPageSize(sameSize ? { widthMm: first.widthMm, heightMm: first.heightMm } : null)
   const host = printHost(sheetId)
   return new Promise((resolve) => {
     let loaded = 0
-    pages.forEach((src, i) => {
+    pages.forEach((pg, i) => {
       const img = new Image()
       // 最后一张不加分页符，避免多打一张空白页
       const pageBreak = i === pages.length - 1 ? '' : 'break-after:page;'
-      img.style.cssText = `width:${paper.widthMm}mm;height:${paper.heightMm}mm;display:block;${pageBreak}`
+      img.style.cssText = `width:${pg.widthMm}mm;height:${pg.heightMm}mm;display:block;${pageBreak}`
       img.onload = () => {
         loaded++
         if (loaded === pages.length) {
@@ -246,18 +332,18 @@ function printPages(pages: string[], paper: PaperSize, sheetId = 'print-area'): 
         }
       }
       host.appendChild(img)
-      img.src = src
+      img.src = pg.url
     })
     if (pages.length === 0) resolve()
   })
 }
 
-/** 浏览器打印：把高清标签放进隐藏 DOM 容器并触发 window.print */
-export function printCanvas(controller: CanvasController, paper: PaperSize, sheetId = 'print-area') {
-  return printPages([canvasToHighResDataUrl(controller, 3)], paper, sheetId)
+/** 浏览器打印：多标签时每张纸各一页，放进隐藏 DOM 容器并触发 window.print */
+export function printCanvas(controller: CanvasController, sheetId = 'print-area') {
+  return printPages(renderAllPapers(controller, 3), sheetId)
 }
 
-/** 批量打印：pages 为每页的高清图（序号已递增），一页一张 */
-export function printBatch(pages: string[], paper: PaperSize, sheetId = 'print-area') {
-  return printPages(pages, paper, sheetId)
+/** 批量打印：pages 为每页（含各自尺寸），一页一张 */
+export function printBatch(pages: RenderedPage[], sheetId = 'print-area') {
+  return printPages(pages, sheetId)
 }
