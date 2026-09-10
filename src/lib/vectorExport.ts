@@ -732,9 +732,44 @@ export async function exportVectorPdf(
   doc.save(`${options.name ?? '标签'}.pdf`)
 }
 
+/** 降级方案：iframe 加载 PDF 后延迟打印，给浏览器 PDF 查看器渲染内容的时间，避免首帧空白 */
+function fallbackIframePrint(doc: jsPDF): void {
+  const blob = doc.output('blob')
+  const url = URL.createObjectURL(blob)
+  const iframe = document.createElement('iframe')
+  iframe.style.cssText =
+    'position:fixed;left:-10000px;top:0;width:800px;height:1000px;border:0;background:#fff;'
+  const cleanup = () => {
+    setTimeout(() => {
+      URL.revokeObjectURL(url)
+      iframe.remove()
+    }, 1000)
+  }
+  iframe.onload = () => {
+    // 延迟 800ms 等 PDF 查看器把内容绘制完成再打印，规避「先弹空白页」的时序问题
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus()
+        iframe.contentWindow?.print()
+      } catch {
+        /* noop */
+      }
+      setTimeout(cleanup, 1000)
+    }, 800)
+  }
+  iframe.onerror = cleanup
+  document.body.appendChild(iframe)
+  iframe.src = url
+}
+
 /**
- * 矢量打印：复用同一套矢量 PDF 构建，生成 PDF blob 后在屏外 iframe 内调用浏览器打印。
- * 浏览器以内置 PDF 查看器渲染矢量页面 → 输出清晰、放大不失真，
+ * 矢量打印：复用同一套矢量 PDF 构建，用 window.open 打开（PDF 自带 autoPrint 动作），
+ * 浏览器渲染完内容后自动弹出打印对话框 —— 内容已就绪，不会先弹空白页。
+ *
+ * 实现要点：
+ * - 在用户点击手势的**同步栈内**先 `window.open('')` 占位，规避弹窗拦截；
+ *   构建完 PDF 再把 bloburl 写入该窗口，PDF 自带 autoPrint → 自动打印。
+ * - 若窗口被拦截（返回 null），降级为 iframe 延迟打印。
  * 与「先渲染 PNG 位图再 window.print()」有本质区别（位图会被拉伸糊化）。
  */
 export async function printVectorPdf(
@@ -742,43 +777,14 @@ export async function printVectorPdf(
   paper: PaperSize,
   options: VectorPdfOptions = {},
 ): Promise<void> {
+  // 同步段：仍在 click 调用栈内，window.open 不会被拦截
+  const win = typeof window !== 'undefined' ? window.open('', '_blank') : null
   const doc = await buildVectorPdf(controller, paper, options)
-  const blob = doc.output('blob')
-  const url = URL.createObjectURL(blob)
-  await new Promise<void>((resolve) => {
-    const iframe = document.createElement('iframe')
-    iframe.style.cssText =
-      'position:fixed;left:-10000px;top:0;width:800px;height:1000px;border:0;background:#fff;'
-    const cleanup = () => {
-      setTimeout(() => {
-        URL.revokeObjectURL(url)
-        iframe.remove()
-      }, 1000)
-      resolve()
-    }
-    iframe.onload = () => {
-      const w = iframe.contentWindow
-      if (!w) return cleanup()
-      const done = () => {
-        w.removeEventListener('afterprint', done)
-        cleanup()
-      }
-      // 打印对话框关闭后清理（取消也会触发 afterprint）
-      w.addEventListener('afterprint', done)
-      // 兜底：部分环境不会触发 afterprint，30s 后也清理
-      setTimeout(() => {
-        w.removeEventListener('afterprint', done)
-        cleanup()
-      }, 30000)
-      try {
-        w.focus()
-        w.print()
-      } catch {
-        cleanup()
-      }
-    }
-    iframe.onerror = () => cleanup()
-    document.body.appendChild(iframe)
-    iframe.src = url
-  })
+  if (!win) {
+    fallbackIframePrint(doc)
+    return
+  }
+  doc.autoPrint()
+  const blobUrl = doc.output('bloburl')
+  win.location.href = blobUrl.toString()
 }
