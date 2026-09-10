@@ -221,6 +221,12 @@ export class CanvasController {
   seqIndex: number | null = null
   /** 撤销栈：每次编辑前 push 的画布 JSON（canvas.toJSON()） */
   private undoStack: Array<Record<string, unknown>> = []
+  /**
+   * 拖拽/缩放/旋转开始（mouse:down）时采集的「操作前」快照。
+   * object:modified 触发时若存在该快照则入撤销栈 —— 保证撤销回到操作前，
+   * 且「点一下没拖动」不会污染历史。
+   */
+  private _pendingHistory: Record<string, unknown> | null = null
   /** 剪贴板：复制出的对象 JSON 列表 */
   private clipboard: Array<Record<string, unknown>> = []
   /** 内容连续输入的 coalesce 标识（同一对象同一编辑会话只入一次栈） */
@@ -305,13 +311,28 @@ export class CanvasController {
       this.applySnap(t)
     })
     this.canvas.on('object:rotating', () => this.emitActiveThrottled())
+    // ⚠️ 交互前的快照：拖动/缩放/旋转必须记录「操作之前」的状态，否则撤销等于回到原位。
+    // mouse:down 时若命中了对象，先暂存一份快照（pending），待 object:modified 确认确有变换后再入栈。
+    // 这样「点一下就松手」（无变换）不会污染历史栈，而真正的拖动可被 Ctrl+Z 还原。
+    this.canvas.on('mouse:down', (opt) => {
+      const t = (opt as { target?: fabric.Object }).target
+      if (!t || cf(t).excludeFromExport) {
+        this._pendingHistory = null
+        return
+      }
+      this._pendingHistory = JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>
+    })
     this.canvas.on('object:modified', () => {
       this.clearGuides()
       // 拖出/拖回后立即刷一次透明度视觉
       for (const o of this.canvas.getObjects()) this.updateOutsidePaperVisual(o)
       this.emitActive()
-      // 移动/缩放/旋转结束后压入历史，否则最常用的「拖动对象」无法 Ctrl+Z 撤销
-      this.pushHistory()
+      // 提交「拖动前」的快照（在 mouse:down 时采集）—— 必须压入旧状态，撤销才会回到操作前。
+      // 直接在 modified 里 pushHistory 会把「已变换后」的状态压栈，撤销看似生效实则原地不动。
+      if (this._pendingHistory) {
+        this._commitHistory(this._pendingHistory)
+        this._pendingHistory = null
+      }
       this.events.onDirty()
     })
     // 画布原地编辑文字 → 退出编辑时同步回原文，避免“面板/保存/刷新内容不一致”。
@@ -2672,7 +2693,13 @@ export class CanvasController {
   // ── 撤销 / 复制粘贴 / 键盘微调 ───────────────────────────
   /** 在产生一次“语义编辑”前调用：把当前画布压入撤销栈 */
   pushHistory() {
-    this.undoStack.push(JSON.parse(JSON.stringify(this.canvas.toJSON())))
+    this._commitHistory(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
+  }
+
+  /** 把给定快照压入撤销栈（供交互前采集的 pending 快照提交） */
+  private _commitHistory(snap: Record<string, unknown>) {
+    this.undoStack.push(snap)
+    // 限制栈深，防止长会话内存无限增长
     if (this.undoStack.length > 40) this.undoStack.shift()
   }
 
