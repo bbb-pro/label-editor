@@ -1,6 +1,6 @@
 // 右侧属性面板：纸张 / 选中对象几何 / 内容 / 文本格式
 import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -236,8 +236,8 @@ function TextFormatSection({
           {/* 字号(pt)：自由输入 + 预设（数字框自带上下微调箭头，省去独立步进按钮） */}
           <div className="flex h-8 items-center gap-1">
             <FontSizeField
+              key={keySeed}
               value={fmt.fontSizePt}
-              resetKey={keySeed}
               onCommit={(v) => onChange({ fontSizePt: v })}
             />
             <FontPresetSelect
@@ -414,7 +414,7 @@ function SelectedObjectPanel({
           </Button>
         </div>
         {canEditContent && (
-          <NameField value={active.name} onChange={onNameChange} headers={headers} />
+          <NameField key={active.id ?? active.name} value={active.name} onChange={onNameChange} headers={headers} />
         )}
       </Section>
 
@@ -651,11 +651,10 @@ function NameField({
   onChange: (name: string) => void
   headers: string[]
 }) {
+  // 本地草稿态：允许「删到空串再重新输入」而不被引擎的自动命名覆盖。
+  // 父级用 key={active.id} 在「切换选中对象」时强制重建，故无需同步 effect
+  // （原 useEffect 内 setState 会触发级联渲染，已被 eslint 标记）。
   const [text, setText] = useState(value)
-  const focusedRef = useRef(false)
-  useEffect(() => {
-    if (!focusedRef.current) setText(value)
-  }, [value])
   const bound = text.trim() && headers.includes(text.trim())
   return (
     <div className="pt-2">
@@ -670,13 +669,6 @@ function NameField({
       </label>
       <Input
         value={text}
-        onFocus={() => {
-          focusedRef.current = true
-        }}
-        onBlur={() => {
-          focusedRef.current = false
-          setText(value)
-        }}
         onChange={(e) => {
           setText(e.target.value)
           onChange(e.target.value)
@@ -879,21 +871,16 @@ function clampFontSize(v: number): number {
  */
 function FontSizeField({
   value,
-  resetKey,
   onCommit,
 }: {
   value: number
-  resetKey: string
   onCommit: (pt: number) => void
 }) {
   const [draft, setDraft] = useState(() => String(value))
   const focused = useRef(false)
 
-  // 外部值变化且当前未聚焦时同步显示（切换选中对象、点预设下拉等）
-  useEffect(() => {
-    if (!focused.current) setDraft(String(value))
-    // resetKey 用于「切到另一个对象但字号恰好相同」时也要重置草稿
-  }, [value, resetKey])
+  // 外部值变化（切换对象/点预设）时靠父级 key={resetKey} 重建本组件来同步，
+  // 因此这里不再需要「聚焦时不同步」的 useEffect（原写法会在 effect 内 setState）。
 
   const commit = (raw: string, normalize: boolean) => {
     const n = parseFloat(raw)
@@ -1006,19 +993,15 @@ function DecorSection({
   const s = serial
   const [localStart, setLocalStart] = useState(s ? String(s.start) : '1')
   const [localStep, setLocalStep] = useState(s ? String(s.step) : '1')
-  const [localDigits, setLocalDigits] = useState(s ? String(s.minDigits) : '4')
   const enabled = !!s?.enabled
   // 补零位数显示始终跟随“真实生效值”：
   // 引擎在首次开启序列化时，可能按文本末尾数字位数改写 minDigits（如原文 “001”→3），
   // 若 UI 只靠本地 state 会与真实渲染位数脱节（框里显示 4 实际 3，用户以为没生效）。
-  // 这里：仅当用户正聚焦输入框时保留本地草稿，其余时刻跟随 serial.minDigits。
+  // 方案：默认直接派生自 serial.minDigits；仅当用户正在输入（draft !== null）时用草稿值。
+  // 这样无需「effect 内 setState」去同步（原写法会触发级联渲染并被 eslint 标记）。
+  const [digitsDraft, setDigitsDraft] = useState<string | null>(null)
   const digitsFocused = useRef(false)
-  useEffect(() => {
-    if (!digitsFocused.current) {
-      const nd = serial?.minDigits
-      if (typeof nd === 'number' && nd >= 1) setLocalDigits(String(nd))
-    }
-  }, [serial?.minDigits])
+  const localDigits = digitsDraft ?? (typeof s?.minDigits === 'number' && s.minDigits >= 1 ? String(s.minDigits) : '4')
   const num = (v: string, def: number) => {
     const n = parseFloat(v)
     return Number.isFinite(n) && n >= 0 ? Math.round(n) : def
@@ -1118,7 +1101,7 @@ function DecorSection({
                 value={localDigits}
                 onChange={(e) => {
                   const raw = e.target.value
-                  setLocalDigits(raw)
+                  setDigitsDraft(raw)
                   // 实时提交：键入即刷新画布（改 3→5 立刻变 00001），不必等失焦。
                   // 仅当已是合法正整数才提交，避免清空/半输入中间态误触发（如清空变 4）。
                   if (/^[1-9]\d*$/.test(raw)) commitSerial({ digits: raw })
@@ -1128,7 +1111,8 @@ function DecorSection({
                 }}
                 onBlur={() => {
                   digitsFocused.current = false
-                  commitSerial({ digits: localDigits })
+                  // 失焦后清除草稿，显示权交回 serial.minDigits（保持与引擎一致）
+                  setDigitsDraft(null)
                 }}
                 className="h-7 w-full rounded border bg-background px-1.5 text-xs tabular-nums focus:outline-none"
               />

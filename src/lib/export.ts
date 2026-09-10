@@ -108,9 +108,8 @@ export async function exportPng(controller: CanvasController, name = '标签') {
 /** 批量把若干张 PNG 依次下载成独立文件（序列化多张场景） */
 export function exportPngPages(pages: RenderedPage[], name = '标签') {
   pages.forEach((pg, i) => {
-    // 逐个下载，稍延时以免浏览器拦截连续下载
-    const n = i > 0 ? i + 1 : ''
-    download(pg.url, `${name}${n}.png`)
+    // 逐个下载，稍延时以免浏览器拦截连续下载；编号从 1 开始（此前 i>0 才加编号，导致缺「1」）
+    download(pg.url, `${name}${i + 1}.png`)
   })
 }
 
@@ -138,6 +137,8 @@ export async function renderSeqPages(
   const prevActive = canvas.getActiveObject()
   const prevSelection = prevActive ? true : false
   if (prevSelection) canvas.discardActiveObject()
+  // 导出期间锁定交互，避免 await 多帧时用户拖动/删除对象导致截到半成品
+  controller.setReadOnly(true)
   try {
     for (let p = 0; p < total; p++) {
       const { paperIdx, index } = pageSlot(p, copiesSafe, paperCount, order)
@@ -156,6 +157,7 @@ export async function renderSeqPages(
     controller.setSeqIndex(null)
     await controller.whenIdle()
   } finally {
+    controller.setReadOnly(false)
     // 恢复选中，避免破坏用户连续编辑流程
     if (prevSelection && prevActive) {
       canvas.setActiveObject(prevActive)
@@ -188,6 +190,7 @@ export async function renderRowPages(
   const prevActive = canvas.getActiveObject()
   const prevSelection = prevActive ? true : false
   if (prevSelection) canvas.discardActiveObject()
+  controller.setReadOnly(true)
   try {
     for (let p = 0; p < total; p++) {
       const { paperIdx, index } = pageSlot(p, rowCount, paperCount, order)
@@ -204,6 +207,7 @@ export async function renderRowPages(
     controller.setPreviewRow(null)
     await controller.whenIdle()
   } finally {
+    controller.setReadOnly(false)
     if (prevSelection && prevActive) {
       canvas.setActiveObject(prevActive)
       canvas.requestRenderAll()
@@ -237,6 +241,11 @@ export function exportPdf(controller: CanvasController, paper: PaperSize, name =
   img.onload = () => {
     doc.addImage(img, 'PNG', 0, 0, size.widthMm, size.heightMm)
     doc.save(`${name}.pdf`)
+  }
+  // 图片解码失败时不再静默无输出：给出可诊断的错误
+  img.onerror = () => {
+    console.error('[export] 位图 PDF 导出失败：画布截图无法解码')
+    throw new Error('PDF 导出失败：画面渲染异常，请重试或改用矢量导出')
   }
   img.src = dataUrl
 }

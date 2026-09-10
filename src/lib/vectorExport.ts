@@ -95,26 +95,45 @@ function parseColor(color: string | null | undefined): [number, number, number] 
 
 /* ── 中文字体子集化 + 内嵌 ─────────────────────────── */
 
-/** 传入需要包含的字符数组，生成可嵌入 jsPDF 的子集字体 */
-async function subsetFont(chars: Iterable<number>): Promise<{ embed: (doc: jsPDF) => void }> {
-  const cps = new Set<number>(chars)
-  // 始终补全 ASCII 与常见标点，避免某些运行依赖
-  for (let c = 0x20; c <= 0x7e; c++) cps.add(c)
-  for (const ch of '，。、；：？！（）【】“”‘’·—…％‰＋－＝≤≥×÷㎡℃~№') cps.add(ch.codePointAt(0)!)
+/** TTF 原始字节的内存缓存：避免每次导出都重新 fetch 字体文件 */
+let _ttfCache: ArrayBuffer | null = null
+async function loadTtf(): Promise<ArrayBuffer> {
+  if (_ttfCache) return _ttfCache
   const resp = await fetch(FONT_URL())
-  const buf = await resp.arrayBuffer()
-  const font = Font.create(buf, { type: 'ttf', subset: [...cps], compound2simple: true })
-  const out = font.write({ type: 'ttf' })
-  const u8: Uint8Array = out instanceof Uint8Array ? out : new Uint8Array(out as ArrayBuffer)
-  let bin = ''
-  const CHUNK = 0x4000
-  for (let i = 0; i < u8.length; i += CHUNK) bin += String.fromCharCode(...Array.from(u8.subarray(i, i + CHUNK)))
-  const b64 = btoa(bin)
-  return {
-    embed(doc: jsPDF) {
-      doc.addFileToVFS(`${FONT_ALIAS}.ttf`, b64)
-      doc.addFont(`${FONT_ALIAS}.ttf`, FONT_ALIAS, 'normal')
-    },
+  if (!resp.ok) throw new Error(`字体加载失败 HTTP ${resp.status}`)
+  _ttfCache = await resp.arrayBuffer()
+  return _ttfCache
+}
+
+/**
+ * 传入需要包含的字符数组，生成可嵌入 jsPDF 的子集字体。
+ * 任何一步失败（网络 / 字体内不含目标字形 / 子集化异常）都返回 null，
+ * 由调用方降级为内置 Helvetica —— 保证图表/形状/条码等非文本内容仍能导出，
+ * 而不是整份 PDF 直接失败。
+ */
+async function subsetFont(chars: Iterable<number>): Promise<{ embed: (doc: jsPDF) => void } | null> {
+  try {
+    const cps = new Set<number>(chars)
+    // 始终补全 ASCII 与常见标点，避免某些运行依赖
+    for (let c = 0x20; c <= 0x7e; c++) cps.add(c)
+    for (const ch of '，。、；：？！（）【】“”‘’·—…％‰＋－＝≤≥×÷㎡℃~№') cps.add(ch.codePointAt(0)!)
+    const buf = await loadTtf()
+    const font = Font.create(buf, { type: 'ttf', subset: [...cps], compound2simple: true })
+    const out = font.write({ type: 'ttf' })
+    const u8: Uint8Array = out instanceof Uint8Array ? out : new Uint8Array(out as ArrayBuffer)
+    let bin = ''
+    const CHUNK = 0x4000
+    for (let i = 0; i < u8.length; i += CHUNK) bin += String.fromCharCode(...Array.from(u8.subarray(i, i + CHUNK)))
+    const b64 = btoa(bin)
+    return {
+      embed(doc: jsPDF) {
+        doc.addFileToVFS(`${FONT_ALIAS}.ttf`, b64)
+        doc.addFont(`${FONT_ALIAS}.ttf`, FONT_ALIAS, 'normal')
+      },
+    }
+  } catch (err) {
+    console.warn('[vectorExport] 中文字体子集化失败，降级为 Helvetica（中文可能显示为方框）', err)
+    return null
   }
 }
 
@@ -130,12 +149,22 @@ interface Box {
   angleDeg: number
 }
 
-/** 纸张原点（工作区坐标,px）：getBoundingRect(true) 返回的是「工作区」坐标，
- *  而 PDF 页面尺寸只等于纸张大小，绘制前必须减去该原点，
- *  否则所有内容都被画到 ~600mm 之外的页面外 → 表现为「导出空白 PDF」。
- *  由 exportVectorPdf 入口按当前纸张偏移设置。 */
+/**
+ * 纸张原点（工作区坐标,px）：getBoundingRect(true) 返回的是「工作区」坐标，
+ * 而 PDF 页面尺寸只等于纸张大小，绘制前必须减去该原点，
+ * 否则所有内容都被画到 ~600mm 之外的页面外 → 表现为「导出空白 PDF」。
+ *
+ * ⚠️ 用「模块级变量 + 每页覆写」在并发导出时会互相污染（两路 buildVectorPdf 交错）。
+ * 现改为随 buildVectorPdf 的 drawPage 闭包传递；此处仅保留当前原点，供叶子绘制函数读取。
+ */
 let originX = 0
 let originY = 0
+
+/** 设置当前绘制页的纸张原点（仅在 buildVectorPdf 的单页绘制临界区内使用） */
+function setOrigin(x: number, y: number) {
+  originX = x
+  originY = y
+}
 
 function leafBox(o: Leaf): Box {
   const rect = o.getBoundingRect(true)
@@ -680,16 +709,18 @@ export async function buildVectorPdf(
     compress: true,
   })
 
-  // 内嵌中文字体
+  // 内嵌中文字体（失败时降级 Helvetica，不影响图形/条码导出）
   const allChars = new Set<number>()
   for (const s of textPool) for (const ch of s) allChars.add(ch.codePointAt(0)!)
   const font = await subsetFont(allChars)
-  font.embed(doc)
+  if (font) font.embed(doc)
 
   // 去掉选中框（捕获干净画面）
   const prevSel = canvas.getActiveObject()
   const hadSel = !!prevSel
   if (hadSel) canvas.discardActiveObject()
+  // 逐页绘制含 await（SVG 素材），期间锁交互，防止用户改动画布导致某一页错位
+  controller.setReadOnly(true)
   try {
     for (let p = 0; p < pageCount; p++) {
       const { paperIdx, index } = slotOf(p)
@@ -697,8 +728,7 @@ export async function buildVectorPdf(
       const sizeMm: PaperSize = pa ? { widthMm: pa.widthMm, heightMm: pa.heightMm } : paper
       // 坐标原点平移到「本页这张纸」的左上角（leafBox 用的是工作区坐标）
       const pb = pa ? controller.getPaperBoundsPxFor(pa.id) : controller.getPaperBoundsPx()
-      originX = pb.left
-      originY = pb.top
+      setOrigin(pb.left, pb.top)
       if (p > 0) {
         doc.addPage([sizeMm.widthMm, sizeMm.heightMm], sizeMm.widthMm >= sizeMm.heightMm ? 'landscape' : 'portrait')
       }
@@ -711,6 +741,7 @@ export async function buildVectorPdf(
       onProgress?.(p + 1, pageCount)
     }
   } finally {
+    controller.setReadOnly(false)
     if (rowMode) controller.setPreviewRow(null)
     else if (serialActive) controller.setSeqValue(prevSeq)
     if (hadSel && prevSel) {
@@ -755,7 +786,15 @@ export async function printVectorPdf(
     // 移出视口但仍保持渲染：display:none 会导致部分浏览器的 PDF 查看器不渲染 / 不触发 autoPrint
     iframe.style.cssText =
       'position:fixed;left:-10000px;top:0;width:800px;height:1000px;border:0;background:#fff;'
+    let idleTimer: ReturnType<typeof setTimeout> | null = null
+    let settled = false
     const cleanup = () => {
+      if (settled) return
+      settled = true
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+        idleTimer = null
+      }
       setTimeout(() => {
         URL.revokeObjectURL(url)
         iframe.remove()
@@ -771,8 +810,8 @@ export async function printVectorPdf(
         cleanup()
       }
       w.addEventListener('afterprint', done)
-      // 兜底：用户始终未关闭对话框也最终回收
-      setTimeout(() => {
+      // 兜底：用户始终未关闭对话框也最终回收（cleanup 会清掉本定时器，不残留）
+      idleTimer = setTimeout(() => {
         w.removeEventListener('afterprint', done)
         cleanup()
       }, 60000)

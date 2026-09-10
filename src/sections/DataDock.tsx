@@ -23,6 +23,12 @@ const DOCK_COLLAPSED_KEY = 'label-editor.dockCollapsed'
 const DEFAULT_H = 150
 const MIN_H = 120
 const MAX_H = 380
+/** 表格行高（px），用于窗口化渲染时占位行的总高度换算；与 td 的 py-1 + text-xs 行高一致 */
+const ROW_H = 25
+/** 超过该行数才启用窗口化，小表直接全量渲染（逻辑更直观、无占位行） */
+const VIRTUALIZE_THRESHOLD = 200
+/** 窗口化时，当前行上下各多渲染的行数（缓冲，滚动时不易露白） */
+const WINDOW_PAD = 60
 const ACCEPT =
   '.csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
 
@@ -33,6 +39,15 @@ export default function DataDock(props: DataDockProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const dragging = useRef(false)
   const [isDragging, setIsDragging] = useState(false)
+
+  // 窗口化窗口：仅大表启用；窗口以「当前选中行」为中心，选中行变化时自动跟随。
+  const rowWindow = (() => {
+    if (rows.length <= VIRTUALIZE_THRESHOLD) return { start: 0, end: rows.length }
+    const center = currentIndex >= 0 ? currentIndex : 0
+    const start = Math.max(0, center - WINDOW_PAD)
+    const end = Math.min(rows.length, center + WINDOW_PAD)
+    return { start, end }
+  })()
 
   // 统一触发文件选择（不依赖 <label> 转发：<button> 在 label 内会吞掉 click，
   // 导致文件框不弹出，这就是「点击上传没用」的根因。改用 ref.click() 可靠触发）
@@ -254,25 +269,40 @@ export default function DataDock(props: DataDockProps) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, i) => (
-                    <tr
-                      key={i}
-                      onClick={() => onSelectRow(i)}
-                      className={cn(
-                        'cursor-pointer border-b transition-colors',
-                        i === currentIndex
-                          ? 'bg-blue-50 text-blue-900'
-                          : 'hover:bg-muted/40',
-                      )}
-                    >
-                      <td className="px-2 py-1 tabular-nums text-muted-foreground">{i + 1}</td>
-                      {headers.map((h) => (
-                        <td key={h} className="whitespace-nowrap px-2 py-1">
-                          {row[h] ?? ''}
-                        </td>
-                      ))}
+                  {/* 大表窗口化：万行 Excel 全量渲染会撑爆 DOM（卡顿/崩溃）。
+                      超过阈值时只渲染「当前行」附近一段，上下用占位行撑起滚动高度。 */}
+                  {rowWindow.start > 0 && (
+                    <tr aria-hidden style={{ height: rowWindow.start * ROW_H }}>
+                      <td colSpan={headers.length + 1} className="p-0" />
                     </tr>
-                  ))}
+                  )}
+                  {rows.slice(rowWindow.start, rowWindow.end).map((row, k) => {
+                    const i = rowWindow.start + k
+                    return (
+                      <tr
+                        key={i}
+                        onClick={() => onSelectRow(i)}
+                        className={cn(
+                          'cursor-pointer border-b transition-colors',
+                          i === currentIndex
+                            ? 'bg-blue-50 text-blue-900'
+                            : 'hover:bg-muted/40',
+                        )}
+                      >
+                        <td className="px-2 py-1 tabular-nums text-muted-foreground">{i + 1}</td>
+                        {headers.map((h) => (
+                          <td key={h} className="whitespace-nowrap px-2 py-1">
+                            {row[h] ?? ''}
+                          </td>
+                        ))}
+                      </tr>
+                    )
+                  })}
+                  {rowWindow.end < rows.length && (
+                    <tr aria-hidden style={{ height: (rows.length - rowWindow.end) * ROW_H }}>
+                      <td colSpan={headers.length + 1} className="p-0" />
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

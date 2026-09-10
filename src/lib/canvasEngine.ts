@@ -310,6 +310,8 @@ export class CanvasController {
       // 拖出/拖回后立即刷一次透明度视觉
       for (const o of this.canvas.getObjects()) this.updateOutsidePaperVisual(o)
       this.emitActive()
+      // 移动/缩放/旋转结束后压入历史，否则最常用的「拖动对象」无法 Ctrl+Z 撤销
+      this.pushHistory()
       this.events.onDirty()
     })
     // 画布原地编辑文字 → 退出编辑时同步回原文，避免“面板/保存/刷新内容不一致”。
@@ -336,6 +338,8 @@ export class CanvasController {
    */
   private _pending = 0
   private _waiters: Array<() => void> = []
+  /** 导出/批量打印期间的临时只读标记（见 setReadOnly） */
+  private _readOnly = false
 
   /** 等待一帧（让 fabric 的 requestRenderAll 真正把状态画到 canvas 元素） */
   private nextRenderFrame(): Promise<void> {
@@ -762,7 +766,20 @@ export class CanvasController {
 
   /** 刷新画布上所有内容对象（递归含组内），用于变量/序列号切换后重绘 */
   refreshAllContent() {
-    this.flattenTopLevel().forEach((o) => this.refreshContentObject(o))
+    const objs = this.flattenTopLevel()
+    // ⚠️ 原实现逐对象调用 displayContent → 每次都全量 buildContentMap（遍历全部对象），
+    // 整体退化为 O(n²)。这里按「纸张」预构建一次 contentMap 供同纸对象复用。
+    const mapCache = new Map<string, Map<string, string>>()
+    const mapFor = (o: fabric.Object) => {
+      const pid = this.paperFor(o).id
+      let m = mapCache.get(pid)
+      if (!m) {
+        m = this.buildContentMap(pid)
+        mapCache.set(pid, m)
+      }
+      return m
+    }
+    objs.forEach((o) => this.refreshContentObject(o, mapFor(o)))
     this.canvas.requestRenderAll()
   }
 
@@ -1835,6 +1852,26 @@ export class CanvasController {
     this.events.onDirty()
   }
 
+  /**
+   * 导出/批量打印期间把画布置为只读：批量渲染要 await 多帧，若用户此刻拖动/删除对象，
+   * 截出来的就是半成品。置只读后 fabric 不再响应对象选择与变换，导出结束由调用方复位。
+   * （不改变对象的 _locked 业务状态，仅临时关闭交互。）
+   */
+  setReadOnly(readOnly: boolean) {
+    if (this._readOnly === readOnly) return
+    this._readOnly = readOnly
+    this.canvas.selection = !readOnly
+    for (const o of this.canvas.getObjects()) {
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue // 纸卡不参与
+      o.selectable = !readOnly
+      o.evented = !readOnly
+      // 已业务锁定的对象在解除只读后仍需保持不可变换（由 applyLockState 统一恢复）
+      if (!readOnly) this.applyLockState(o)
+    }
+    if (readOnly) this.canvas.discardActiveObject()
+    this.canvas.requestRenderAll()
+  }
+
   /** 解锁画布上全部对象 */
   unlockAll() {
     let changed = false
@@ -2026,16 +2063,18 @@ export class CanvasController {
   /**
    * 解析某对象的显示内容：序列号 → 数据列 → 跨对象名称引用（递归）。
    * 多标签时跨对象引用只在同一张纸内查找（不同纸可以有同名对象，互不影响）。
+   * @param prebuilt 批量刷新时由调用方预先构建好的 contentMap，避免逐对象重建导致 O(n²)
    */
-  private resolveDesign(design: string, self?: fabric.Object): string {
+  private resolveDesign(design: string, self?: fabric.Object, prebuilt?: Map<string, string>): string {
     const pid = self ? this.paperFor(self).id : undefined
-    return resolveContent(this.applySeq(design), this.previewRow, this.buildContentMap(pid), new Set())
+    const map = prebuilt ?? this.buildContentMap(pid)
+    return resolveContent(this.applySeq(design), this.previewRow, map, new Set())
   }
 
   /** 计算某内容对象要显示的最终文案（含前后缀/序列号/变量/跨对象/列绑定） */
-  private displayContent(o: fabric.Object): string {
+  private displayContent(o: fabric.Object, prebuilt?: Map<string, string>): string {
     const c = cf(o)
-    return this.finalizeSerial(o, this.resolveDesign(this.rawDesign(c), o))
+    return this.finalizeSerial(o, this.resolveDesign(this.rawDesign(c), o, prebuilt))
   }
 
   /** 对外：取对象当前应显示的文案（已套用当前 seqValue/末尾数字序列化），供矢量导出使用 */
@@ -2053,12 +2092,12 @@ export class CanvasController {
   }
 
   /** 按对象当前设计原文刷新其显示内容 */
-  private refreshContentObject(o: fabric.Object) {
+  private refreshContentObject(o: fabric.Object, prebuilt?: Map<string, string>) {
     const c = cf(o)
     if (isBarcodeKind(c.kind)) {
       if (c._barcodeRaw != null || c._prefix != null || c._suffix != null) this.rerenderBarcode(o)
     } else if (c.kind === 'text') {
-      const next = this.displayContent(o)
+      const next = this.displayContent(o, prebuilt)
       if (o instanceof fabric.Textbox) {
         const cur = o as fabric.Textbox
         cur.set({ text: next })
@@ -2426,10 +2465,21 @@ export class CanvasController {
     const el = this.canvas.getElement() as HTMLCanvasElement
     const DPR = el.width / Math.max(1, this.workspaceW)
     const out = document.createElement('canvas')
-    out.width = Math.round(paper.width * scale)
-    out.height = Math.round(paper.height * scale)
+    // 浏览器 canvas 单边上限约 16384px（部分环境 32767），超限会静默输出空白。
+    // 这里对外输出尺寸做钳制，必要时等比降低 effectiveScale，保证大标签仍能导出。
+    const MAX_DIM = 16384
+    let effectiveScale = scale
+    const maxSide = Math.max(paper.width, paper.height) * scale
+    if (maxSide > MAX_DIM) {
+      effectiveScale = scale * (MAX_DIM / maxSide)
+      console.warn(
+        `[canvasEngine] 标签过大，超出 canvas 上限，导出缩放 ${scale} → ${effectiveScale.toFixed(2)}`,
+      )
+    }
+    out.width = Math.max(1, Math.round(paper.width * effectiveScale))
+    out.height = Math.max(1, Math.round(paper.height * effectiveScale))
     const ctx = out.getContext('2d')!
-    ctx.scale(scale, scale)
+    ctx.scale(effectiveScale, effectiveScale)
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, paper.width, paper.height)
     ctx.drawImage(
@@ -2500,6 +2550,9 @@ export class CanvasController {
       const srcIsGroup = s.type === 'group'
       const isGroupObj = this.isGroup(o)
       if (srcIsGroup && isGroupObj) {
+        // 组自身也要恢复自定义字段（锁定态、命名、id、条码元数据…），
+        // 早期只递归子对象、跳过原字段 → 锁定的用户编组保存后载入变可拖动。
+        this.restoreObjectFields(o, s)
         const childSrc = Array.isArray(s.objects) ? (s.objects as unknown[]) : []
         this.restoreRecursive((o as fabric.Group).getObjects(), childSrc)
       } else {
@@ -2576,6 +2629,16 @@ export class CanvasController {
   }
 
   destroy() {
+    // 取消挂起的 rAF，避免销毁后回调访问已 dispose 的 canvas
+    if (this._raf) {
+      cancelAnimationFrame(this._raf)
+      this._raf = null
+    }
+    // 唤醒所有 whenIdle 等待者，避免其 Promise 永久挂起（导出流程卡死）
+    this._pending = 0
+    const waiters = this._waiters.slice()
+    this._waiters.length = 0
+    for (const w of waiters) w()
     this.canvas.dispose()
   }
 

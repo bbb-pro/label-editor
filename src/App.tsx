@@ -60,9 +60,12 @@ export default function App() {
   const [paper, setPaper] = useState<PaperSize>(DEFAULT_PAPER)
   const [tool, setTool] = useState<ToolType | null>(null)
   const [active, setActive] = useState<ActiveObject | null>(null)
-  // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态
+  // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态。
+  // 在 effect 中同步，避免渲染期写 ref（并发模式下会被丢弃且属反模式）。
   const activeRef = useRef<ActiveObject | null>(null)
-  activeRef.current = active
+  useEffect(() => {
+    activeRef.current = active
+  }, [active])
   const [zoom, setZoom] = useState(1)
   const [objectCount, setObjectCount] = useState(0)
   const [usedVariables, setUsedVariables] = useState<string[]>([])
@@ -119,9 +122,22 @@ export default function App() {
       onSelection: (info) => setSelection(info),
       onDirty: () => {
         setObjectCount(ctrl.getObjectCount())
-        setUsedVariables(ctrl.collectUsedVariables())
-        setObjectNames(ctrl.collectContentNames())
-        setActiveSerial(ctrl.firstSerial())
+        // 数组类派生数据：内容不变时复用旧引用，避免拖动/导出期间的无谓重渲染
+        setUsedVariables((prev) => {
+          const next = ctrl.collectUsedVariables()
+          return prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next
+        })
+        setObjectNames((prev) => {
+          const next = ctrl.collectContentNames()
+          return prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next
+        })
+        setActiveSerial((prev) => {
+          const next = ctrl.firstSerial()
+          // 浅比较：序列化设置未变则复用旧引用
+          if (prev === next) return prev
+          if (prev && next && prev.enabled === next.enabled && prev.start === next.start && prev.step === next.step && prev.minDigits === next.minDigits) return prev
+          return next
+        })
         // 多标签：纸张列表/当前纸同步（内容一致时不触发重渲染）
         setPapers((prev) => {
           const next = ctrl.listPapers()
@@ -346,6 +362,7 @@ export default function App() {
     }
     stage.addEventListener('wheel', onWheel, { passive: false })
     const mountedAt = Date.now()
+    let roRaf: number | null = null
     const ro = new ResizeObserver(() => {
       const ctrl = ctrlRef.current
       if (ctrl) ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
@@ -353,11 +370,17 @@ export default function App() {
       // 初始挂载/刷新后的一小段时间内容器会因字体加载等发生多次 reflow，
       // 若此时自动 fit 会覆盖掉“首开/新建”设置的 100%。首段宽限期内忽略。
       if (Date.now() - mountedAt < 700) return
-      fitToView()
+      // rAF 节流：拖动窗口时 ResizeObserver 会高频触发，避免每帧都重算 fitToView
+      if (roRaf != null) cancelAnimationFrame(roRaf)
+      roRaf = requestAnimationFrame(() => {
+        roRaf = null
+        fitToView()
+      })
     })
       ro.observe(stage)
     return () => {
       stage.removeEventListener('wheel', onWheel)
+      if (roRaf != null) cancelAnimationFrame(roRaf)
       ro.disconnect()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1152,6 +1175,8 @@ export default function App() {
           onMouseDown={(e) => {
             // 左键点到空白处 → 取消选择（中键/右键不触发，避免干扰平移/右键菜单）
             if (e.button !== 0) return
+            // hand 手抓模式下左键用于平移画布，不应清空选中（否则起手即丢失选择）
+            if (hand) return
             const ctrl = ctrlRef.current
             const t = e.target as HTMLElement
             if (ctrl && t === stageRef.current) {

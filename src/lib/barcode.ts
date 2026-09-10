@@ -1,6 +1,4 @@
-// 条码渲染（bwip-js），输出 PNG dataURL 供 fabric 使用
-// 支持 bwip-js 的绝大多数码制，见 https://github.com/metafloor/bwip-js
-import * as bwipjs from 'bwip-js'
+// 条码渲染辅助：码制清单、默认设置推断（真正的渲染见 barcodeVector.ts，输出矢量矩形组）
 
 /** 可选的条码/二维码种类（bcid 需为 bwip-js 合法名） */
 export type BarcodeType =
@@ -153,55 +151,4 @@ export function defaultShowText(type: BarcodeType): boolean {
 /** 某条码对象渲染设置的实际默认值（未存储时按码制推断，含零售默认显示文字） */
 export function defaultSettingsFor(type: BarcodeType): BarcodeRenderSettings {
   return { ...DEFAULT_BARCODE_SETTINGS, showText: defaultShowText(type) }
-}
-
-/**
- * 渲染为 PNG dataURL。
- * 注意：不要把 height/width 以 undefined 传进去，bwip-js 会抛 invalidOptionType。
- * 按码制类型按需构建 opts：矩阵/堆叠 2D 用 scale；一维码给 height。
- * @param settings 覆盖默认渲染设置（可空，用于旧对象/默认）
- */
-export function renderBarcodeDataUrl(
-  type: BarcodeType,
-  text: string,
-  settings?: Partial<BarcodeRenderSettings>,
-): string {
-  const s: BarcodeRenderSettings = {
-    ...DEFAULT_BARCODE_SETTINGS,
-    showText: defaultShowText(type),
-    ...(settings ?? {}),
-  }
-  const canvas = document.createElement('canvas')
-  const showText = is2dType(type) ? false : s.showText
-  const opts: Record<string, unknown> = {
-    bcid: type,
-    text: text || ' ',
-    scale: s.scale,
-    includetext: showText,
-    paddingwidth: s.quietZone,
-    paddingheight: s.quietZone,
-    backgroundcolor: 'FFFFFF',
-  }
-  if (showText) {
-    // pt → bwip 内部按相对单位，textsize 需随 scale 调整以保持可读。
-    // 下限只挡非法值（≥1）：不能设高（旧值 8 会把 ≤10pt 全部锁成同一大小，
-    // 用户调小字号时文字不再变化）。
-    opts.textfont = 'OCR-B'
-    opts.textsize = Math.max(1, Math.round((s.textSizePt * 72) / 96 / s.scale * 2))
-    opts.textxalign = 'center'
-    opts.textgaps = 3
-  }
-  if (is2dType(type)) {
-    // 矩阵/堆叠 2D：仅 scale；QR 系额外应用容错等级
-    if (isQrFamily(type) && s.eccLevel) opts.eclevel = s.eccLevel
-  } else {
-    opts.height = 14
-    opts.width = 2
-    if (type === 'itf14') opts.height = 22
-    if (type === 'postnet' || type === 'planet' || type === 'kix') {
-      opts.height = 8
-    }
-  }
-  bwipjs.toCanvas(canvas, opts as Parameters<typeof bwipjs.toCanvas>[1])
-  return canvas.toDataURL('image/png')
 }
