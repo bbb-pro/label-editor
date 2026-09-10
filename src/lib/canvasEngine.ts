@@ -2079,7 +2079,9 @@ export class CanvasController {
   }
 
   async addImageFile(file: File): Promise<void> {
-    const url = URL.createObjectURL(file)
+    // 用内嵌 dataURL 而非临时 blob 链接：blob 仅在当前会话有效，
+    // 写入模板(JSON)后再加载会因链接失效而丢图；dataURL 自包含、可持久化。
+    const url = await fileToDataUrl(file)
     const imgEl = await loadImageEl(url)
     const img = new fabric.Image(imgEl)
     const maxW = this.paperPxW * 0.6
@@ -2729,5 +2731,15 @@ function loadImageEl(url: string): Promise<HTMLImageElement> {
     im.onload = () => resolve(im)
     im.onerror = () => reject(new Error('图片加载失败'))
     im.src = url
+  })
+}
+
+/** 把本地文件读成内嵌 dataURL（base64），用于序列化进模板后仍能还原 */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error('读取图片文件失败'))
+    reader.readAsDataURL(file)
   })
 }
