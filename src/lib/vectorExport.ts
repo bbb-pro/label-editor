@@ -616,14 +616,20 @@ function pageChars(ctrl: CanvasController): string {
 
 /* ── 主入口 ────────────────────────────────────────── */
 
-export async function exportVectorPdf(
+/**
+ * 构建矢量 PDF（但不保存）：供「导出 PDF」与「矢量打印」共用。
+ * 返回已完成所有页绘制、尚未 save/output 的 jsPDF 实例。
+ */
+export async function buildVectorPdf(
   controller: CanvasController,
   paper: PaperSize,
   options: VectorPdfOptions = {},
-): Promise<void> {
-  const { copies = 1, name = '标签', onProgress, rows, order = 'set', onlyActive = false } = options
+): Promise<jsPDF> {
+  const { copies = 1, onProgress, rows, order = 'set', onlyActive = false } = options
   const canvas = controller.canvas
-  if (canvas.getObjects().length === 0) return
+  if (canvas.getObjects().length === 0) {
+    return new jsPDF({ unit: 'mm', format: [paper.widthMm, paper.heightMm] })
+  }
 
   const all = controller.listPapers()
   // onlyActive：只输出当前活动标签
@@ -713,5 +719,66 @@ export async function exportVectorPdf(
     }
   }
 
-  doc.save(`${name}.pdf`)
+  return doc
+}
+
+/** 导出矢量 PDF（文本可选中/搜索、中文内嵌子集字体；形状/条码/素材均为矢量）。 */
+export async function exportVectorPdf(
+  controller: CanvasController,
+  paper: PaperSize,
+  options: VectorPdfOptions = {},
+): Promise<void> {
+  const doc = await buildVectorPdf(controller, paper, options)
+  doc.save(`${options.name ?? '标签'}.pdf`)
+}
+
+/**
+ * 矢量打印：复用同一套矢量 PDF 构建，生成 PDF blob 后在屏外 iframe 内调用浏览器打印。
+ * 浏览器以内置 PDF 查看器渲染矢量页面 → 输出清晰、放大不失真，
+ * 与「先渲染 PNG 位图再 window.print()」有本质区别（位图会被拉伸糊化）。
+ */
+export async function printVectorPdf(
+  controller: CanvasController,
+  paper: PaperSize,
+  options: VectorPdfOptions = {},
+): Promise<void> {
+  const doc = await buildVectorPdf(controller, paper, options)
+  const blob = doc.output('blob')
+  const url = URL.createObjectURL(blob)
+  await new Promise<void>((resolve) => {
+    const iframe = document.createElement('iframe')
+    iframe.style.cssText =
+      'position:fixed;left:-10000px;top:0;width:800px;height:1000px;border:0;background:#fff;'
+    const cleanup = () => {
+      setTimeout(() => {
+        URL.revokeObjectURL(url)
+        iframe.remove()
+      }, 1000)
+      resolve()
+    }
+    iframe.onload = () => {
+      const w = iframe.contentWindow
+      if (!w) return cleanup()
+      const done = () => {
+        w.removeEventListener('afterprint', done)
+        cleanup()
+      }
+      // 打印对话框关闭后清理（取消也会触发 afterprint）
+      w.addEventListener('afterprint', done)
+      // 兜底：部分环境不会触发 afterprint，30s 后也清理
+      setTimeout(() => {
+        w.removeEventListener('afterprint', done)
+        cleanup()
+      }, 30000)
+      try {
+        w.focus()
+        w.print()
+      } catch {
+        cleanup()
+      }
+    }
+    iframe.onerror = () => cleanup()
+    document.body.appendChild(iframe)
+    iframe.src = url
+  })
 }

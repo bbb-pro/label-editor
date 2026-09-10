@@ -14,14 +14,12 @@ import {
   exportJson,
   exportPng,
   exportPngPages,
-  printCanvas,
-  printBatch,
   renderSeqPages,
   renderRowPages,
   renderAllPapers,
   renderCurrentPage,
 } from '@/lib/export'
-import { exportVectorPdf } from '@/lib/vectorExport'
+import { exportVectorPdf, printVectorPdf } from '@/lib/vectorExport'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
 import type { PaperArea, PaperOrder, PaperSize, DataRow, ToolType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
@@ -903,8 +901,17 @@ export default function App() {
                 ? [renderCurrentPage(ctrl, 3)]
                 : renderAllPapers(ctrl, 3)
           if (mode === 'print') {
-            await printBatch(pages)
-            toast.success(`已提交 ${pages.length} 张到打印`)
+            // 矢量打印：复用矢量 PDF 构建，浏览器以矢量输出（清晰不失真）
+            await printVectorPdf(ctrl, paper, {
+              copies: ctrl.hasActiveSerial() && !rowMode ? copies : 1,
+              rows: rowMode ? rowPages : undefined,
+              order: paperOrder,
+              onlyActive: onlyActivePaper,
+              onProgress: (done, total) => {
+                if (done % 10 === 0 || done === total) toast.message(`正在生成矢量打印 ${done}/${total}…`)
+              },
+            })
+            toast.success('已提交到打印（矢量）')
           } else {
             exportPngPages(pages, '标签')
             toast.success(`已导出 ${pages.length} 张 PNG`)
@@ -939,9 +946,11 @@ export default function App() {
       setBatchMode('print')
       return
     }
-    // 多标签：无序列化/无数据时每张纸各打一页
-    void printCanvas(ctrl)
-  }, [rows])
+    // 多标签：无序列化/无数据时每张纸各打一页（矢量打印）
+    void printVectorPdf(ctrl, paper, { copies: 1, order: paperOrder, onlyActive: false }).catch((err) =>
+      toast.error('打印失败', { description: err instanceof Error ? err.message : String(err) }),
+    )
+  }, [rows, paper, paperOrder])
 
   const onExportPng = useCallback(() => {
     const ctrl = ctrlRef.current

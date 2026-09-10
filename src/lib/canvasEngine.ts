@@ -2183,9 +2183,22 @@ export class CanvasController {
   }
 
   /**
+   * 重算 SVG 线稿组的包围盒并锁定中心：改描边宽度会增大子路径的渲染范围，
+   * 若不刷新组的包围盒，内容会朝组的 left/top 锚点外扩（表现为「往右下角长」）。
+   * 这里先记下中心，_calcBounds 重算尺寸后把中心还原，保证图标位置纹丝不动。
+   */
+  private relayoutSvgGroup(group: fabric.Group) {
+    const ctr = group.getCenterPoint()
+    ;(group as unknown as { _calcBounds: () => void })._calcBounds()
+    group.setPositionByOrigin(ctr, 'center', 'center')
+    group.setCoords()
+  }
+
+  /**
    * 修改当前 SVG 线稿素材的线条粗细（px）。
    * 值直接写进 viewBox 坐标（与 PDF 矢量导出的 stroke-width 同一套单位），
    * 画布上的视觉粗细 = 该值 × 素材缩放比 —— 放大图标时线条跟着变粗，与导出一致。
+   * 描边保持 strokeUniform=false，使其随编组缩放；改完后重算包围盒并锁定中心，避免位移。
    */
   setActiveAssetStrokeWidth(widthPx: number): boolean {
     const obj = this.getActiveObject()
@@ -2194,11 +2207,13 @@ export class CanvasController {
     if (c.kind !== 'svg' || !c._svgIsStroke) return false
     const w = Math.max(0.1, Math.min(20, Math.round(widthPx * 10) / 10))
     c._svgStrokeWidth = w
-    const kids = (obj as fabric.Group).getObjects?.() ?? []
+    const grp = obj as fabric.Group
+    const kids = grp.getObjects?.() ?? []
     for (const kid of kids) {
       if (!kid.stroke || kid.stroke === 'none') continue
-      kid.set({ strokeWidth: w })
+      kid.set({ strokeWidth: w }) // 保持 strokeUniform 默认 false，描边随编组缩放
     }
+    this.relayoutSvgGroup(grp)
     this.canvas.requestRenderAll()
     this.events.onDirty()
     this.emitActive(obj)
@@ -2212,11 +2227,13 @@ export class CanvasController {
     const c = cf(obj)
     if (c.kind !== 'svg' || !c._svgIsStroke) return false
     c._svgColor = color
-    const kids = (obj as fabric.Group).getObjects?.() ?? []
+    const grp = obj as fabric.Group
+    const kids = grp.getObjects?.() ?? []
     for (const kid of kids) {
       const kCf = cf(kid)
       if (kCf.fill && kCf.fill !== 'none') continue // 保留原色填充
-      kid.set({ stroke: color, strokeUniform: true })
+      // 只改颜色，不碰 strokeUniform：保持与「线条粗细」一致的缩放行为，避免改色后线条变细
+      kid.set({ stroke: color })
     }
     this.canvas.requestRenderAll()
     this.events.onDirty()
