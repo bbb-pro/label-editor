@@ -18,6 +18,7 @@ import {
   renderRowPages,
   renderAllPapers,
   renderCurrentPage,
+  PNG_EXPORT_SCALE,
 } from '@/lib/export'
 import { exportVectorPdf, printVectorPdf } from '@/lib/vectorExport'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
@@ -911,18 +912,18 @@ export default function App() {
           toast.success('PDF 已导出（矢量）')
         } else {
           const pages = rowMode
-            ? await renderRowPages(ctrl, rowPages, 3, (done, total) => {
+            ? await renderRowPages(ctrl, rowPages, PNG_EXPORT_SCALE, (done, total) => {
                 if (done % 10 === 0 || done === total) toast.message(`正在渲染 ${done}/${total} 张…`)
               }, paperOrder, onlyActivePaper)
             : ctrl.hasActiveSerial()
-              ? await renderSeqPages(ctrl, copies, 3, (done, total) => {
+              ? await renderSeqPages(ctrl, copies, PNG_EXPORT_SCALE, (done, total) => {
                   if (done % 10 === 0 || done === total) {
                     toast.message(`正在渲染 ${done}/${total} 张…`)
                   }
                 }, paperOrder, onlyActivePaper)
               : onlyActivePaper
-                ? [renderCurrentPage(ctrl, 3)]
-                : renderAllPapers(ctrl, 3)
+                ? [renderCurrentPage(ctrl, PNG_EXPORT_SCALE)]
+                : renderAllPapers(ctrl, PNG_EXPORT_SCALE)
           if (mode === 'print') {
             // 矢量打印：复用矢量 PDF 构建，浏览器以矢量输出（清晰不失真）
             await printVectorPdf(ctrl, paper, {
@@ -994,7 +995,7 @@ export default function App() {
     }
     // 多标签：每张纸各导出一张 PNG
     if (papers.length > 1) {
-      exportPngPages(renderAllPapers(ctrl, 3))
+      exportPngPages(renderAllPapers(ctrl, PNG_EXPORT_SCALE))
       toast.success(`已导出 ${papers.length} 张 PNG`)
       return
     }

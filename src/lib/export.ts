@@ -11,6 +11,14 @@ export interface RenderedPage {
 }
 
 /**
+ * PNG / 栅格导出倍率。
+ * 画布基准 DPI = 96（见 lib/mm.ts），故输出等效 DPI = 96 × 该倍率。
+ * 取 4 → 384 DPI，满足标签打印的高清要求，同时不给浏览器 canvas 上限带来压力
+ * （100×150mm 标签约 1512×2268px）。若需再高一档可调到 6（576 DPI）。
+ */
+export const PNG_EXPORT_SCALE = 4
+
+/**
  * 多标签页序换算：第 p 页（0 起）对应哪张纸 + 第几个序号。
  * - set 按套：[A1 B1 A2 B2]（打印出来天然成套，适合一箱货配多张）
  * - paper 按标签：[A1 A2 B1 B2]（先打完一种，适合尺寸不同要换纸 / 分批贴）
@@ -56,7 +64,7 @@ function pickPapers(controller: CanvasController, onlyActive: boolean): PaperAre
 }
 
 /** 每张纸各渲染一页（多标签：无序列化/无数据绑定时的一次性输出） */
-export function renderAllPapers(controller: CanvasController, scale = 3): RenderedPage[] {
+export function renderAllPapers(controller: CanvasController, scale = PNG_EXPORT_SCALE): RenderedPage[] {
   return controller.listPapers().map((p) => ({
     url: controller.toPaperDataUrl(scale, p.id),
     widthMm: p.widthMm,
@@ -67,7 +75,7 @@ export function renderAllPapers(controller: CanvasController, scale = 3): Render
 /** 当前活动纸渲染成一页（单张导出用） */
 export function renderCurrentPage(
   controller: CanvasController,
-  scale = 3,
+  scale = PNG_EXPORT_SCALE,
 ): RenderedPage {
   const p = controller.listPapers().find((x) => x.id === controller.activePaperId())
   return {
@@ -95,7 +103,7 @@ export async function exportPng(controller: CanvasController, name = '标签') {
   const hadSel = !!prev
   if (hadSel) canvas.discardActiveObject()
   try {
-    const dataUrl = canvasToHighResDataUrl(controller, 3)
+    const dataUrl = canvasToHighResDataUrl(controller, PNG_EXPORT_SCALE)
     download(dataUrl, `${name}.png`)
   } finally {
     if (hadSel && prev) {
@@ -122,7 +130,7 @@ export function exportPngPages(pages: RenderedPage[], name = '标签') {
 export async function renderSeqPages(
   controller: CanvasController,
   copies: number,
-  scale = 3,
+  scale = PNG_EXPORT_SCALE,
   onProgress?: (done: number, total: number) => void,
   order: PaperOrder = 'set',
   onlyActive = false,
@@ -176,7 +184,7 @@ export async function renderSeqPages(
 export async function renderRowPages(
   controller: CanvasController,
   rows: DataRow[],
-  scale = 3,
+  scale = PNG_EXPORT_SCALE,
   onProgress?: (done: number, total: number) => void,
   order: PaperOrder = 'set',
   onlyActive = false,
@@ -349,7 +357,7 @@ function printPages(pages: RenderedPage[], sheetId = 'print-area'): Promise<void
 
 /** 浏览器打印：多标签时每张纸各一页，放进隐藏 DOM 容器并触发 window.print */
 export function printCanvas(controller: CanvasController, sheetId = 'print-area') {
-  return printPages(renderAllPapers(controller, 3), sheetId)
+  return printPages(renderAllPapers(controller, PNG_EXPORT_SCALE), sheetId)
 }
 
 /** 批量打印：pages 为每页（含各自尺寸），一页一张 */

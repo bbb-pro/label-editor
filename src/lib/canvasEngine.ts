@@ -2469,25 +2469,37 @@ export class CanvasController {
   }
 
   /**
-   * 以工作区坐标系把"纸区域"导出为高清 PNG dataURL。
-   * 导出时临时把画布切回工作区尺寸 + identity 视口变换(绕开屏幕缩放/视口裁剪),
-   * 导出后恢复当前视口。供栅格 PNG / 打印 / 批量序列化截图复用。
+   * 以指定倍率把"某张纸区域"导出为高清 PNG dataURL。
+   *
+   * 实现要点：走 fabric 的 `toCanvasElement(multiplier, cropping)` —— 它内部把
+   * viewportTransform 的 zoom 乘上 multiplier 后**重新渲染**（矢量按目标分辨率重绘），
+   * 而不是把屏幕分辨率位图拉大。
+   *
+   * 【根因记录】旧实现是「取屏幕画布 → drawImage 采样纸张区域 → 拉大成目标尺寸」：
+   * 源画布物理分辨率 = 屏幕 CSS 尺寸 × devicePixelRatio，与导出倍率无关。
+   * 实测：100mm 标签在 DPR=2 的屏幕上，可采样到的物理像素仅 ≈756px，
+   * 却要输出 1512px（scale=4）→ 每输出像素仅 0.5 个源像素，纯插值放大，必然发虚。
+   * 因此倍率调多高都没用，必须改成「按倍率矢量重绘」。
+   *
+   * 导出期间把视口变换清零（cropping 以工作区绝对坐标为准）并在结束后恢复。
+   * 供栅格 PNG / 打印 / 批量序列化截图复用。
    */
-  toPaperDataUrl(scale = 3, paperId?: string): string {
+  toPaperDataUrl(scale = 4, paperId?: string): string {
     const paper = paperId ? this.getPaperBoundsPxFor(paperId) : this.getPaperBoundsPx()
     const prevVpt = (this.canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]).slice() as unknown as number[]
     const prevW = this.viewW
     const prevH = this.viewH
     const prevSel = this.canvas.getActiveObject()
     this.canvas.discardActiveObject()
+
+    const prevRetina = this.canvas.enableRetinaScaling
+    // 画布尺寸临时设为整个工作区（裁剪坐标以工作区绝对坐标计），
+    // 视口变换置为 identity，让 crop 矩形与纸张矩形一一对应。
     this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0])
     this.canvas.setDimensions({ width: this.workspaceW, height: this.workspaceH })
-    this.canvas.renderAll()
-    const el = this.canvas.getElement() as HTMLCanvasElement
-    const DPR = el.width / Math.max(1, this.workspaceW)
-    const out = document.createElement('canvas')
+
     // 浏览器 canvas 单边上限约 16384px（部分环境 32767），超限会静默输出空白。
-    // 这里对外输出尺寸做钳制，必要时等比降低 effectiveScale，保证大标签仍能导出。
+    // 对外输出尺寸做钳制，必要时等比降低 effectiveScale，保证大标签仍能导出。
     const MAX_DIM = 16384
     let effectiveScale = scale
     const maxSide = Math.max(paper.width, paper.height) * scale
@@ -2497,23 +2509,44 @@ export class CanvasController {
         `[canvasEngine] 标签过大，超出 canvas 上限，导出缩放 ${scale} → ${effectiveScale.toFixed(2)}`,
       )
     }
-    out.width = Math.max(1, Math.round(paper.width * effectiveScale))
-    out.height = Math.max(1, Math.round(paper.height * effectiveScale))
-    const ctx = out.getContext('2d')!
-    ctx.scale(effectiveScale, effectiveScale)
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, paper.width, paper.height)
-    ctx.drawImage(
-      el,
-      paper.left * DPR, paper.top * DPR, paper.width * DPR, paper.height * DPR,
-      0, 0, paper.width, paper.height,
-    )
-    const url = out.toDataURL('image/png')
-    // 恢复视口
-    this.canvas.setDimensions({ width: prevW, height: prevH })
-    this.canvas.setViewportTransform(prevVpt as unknown as [number, number, number, number, number, number])
-    if (prevSel) this.canvas.setActiveObject(prevSel)
-    this.canvas.requestRenderAll()
+
+    // ⚠️ 关闭 retina 让 multiplier 成为唯一的缩放因子，
+    // 否则最终倍率 = multiplier × devicePixelRatio，会因屏幕不同而输出尺寸不可控。
+    this.canvas.enableRetinaScaling = false
+    // 纸卡带 1px 灰描边（设计稿里用于区分纸张边界），导出时隐藏，改垫纯白底，
+    // 避免 PNG 四边出现灰线。
+    const hiddenCards: fabric.Object[] = []
+    for (const [, r] of this.paperRects) {
+      if (r.visible) {
+        r.set('visible', false)
+        hiddenCards.push(r)
+      }
+    }
+    // ⚠️ 工作区底色是灰的（#e2e8f0）。隐藏纸卡后必须把 backgroundColor 也临时置白，
+    // 否则导出的 PNG 会是灰底（而非白纸）。
+    const prevBg = this.canvas.backgroundColor
+    this.canvas.backgroundColor = '#ffffff'
+    let url = ''
+    try {
+      const raw = this.canvas.toCanvasElement(effectiveScale, {
+        left: paper.left,
+        top: paper.top,
+        width: paper.width,
+        height: paper.height,
+      })
+      url = raw.toDataURL('image/png')
+    } finally {
+      this.canvas.backgroundColor = prevBg
+      for (const r of hiddenCards) r.set('visible', true)
+      this.canvas.enableRetinaScaling = prevRetina
+      // 恢复视口与尺寸
+      this.canvas.setDimensions({ width: prevW, height: prevH })
+      this.canvas.setViewportTransform(
+        prevVpt as unknown as [number, number, number, number, number, number],
+      )
+      if (prevSel) this.canvas.setActiveObject(prevSel)
+      this.canvas.requestRenderAll()
+    }
     return url
   }
 
