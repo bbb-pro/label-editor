@@ -8,7 +8,15 @@ import DataDock from '@/sections/DataDock'
 import AssetsPanel from '@/sections/AssetsPanel'
 import type { AssetItem } from '@/types/assets'
 import { CanvasController } from '@/lib/canvasEngine'
-import { parseSpreadsheet } from '@/lib/spreadsheet'
+
+/**
+ * 按需加载的重依赖 —— 都不在编辑器启动路径上，只在实际用到时才下载：
+ * - 矢量导出：jspdf + svg2pdf + fonteditor-core，gzip 约 231KB
+ * - 表格解析：xlsx，gzip 约 114KB
+ * 打开编辑器只需 fabric + 业务代码，点导出/导入时再补下载。
+ */
+const loadVectorExport = () => import('@/lib/vectorExport')
+const loadSpreadsheet = () => import('@/lib/spreadsheet')
 import { mountRulers, type RulerHandle } from '@/lib/rulers'
 import {
   exportJson,
@@ -20,7 +28,7 @@ import {
   renderCurrentPage,
   PNG_EXPORT_SCALE,
 } from '@/lib/export'
-import { exportVectorPdf, printVectorPdf } from '@/lib/vectorExport'
+// exportVectorPdf / printVectorPdf 改为按需加载，见 loadVectorExport
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
 import type { PaperArea, PaperOrder, PaperSize, DataRow, ToolType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
@@ -900,6 +908,7 @@ export default function App() {
         const rowPages = rowMode ? rows.slice(0, Math.max(1, copies)) : []
         // PDF：走矢量导出（文本可选中/搜索，中文内嵌子集字体）
         if (mode === 'pdf') {
+          const { exportVectorPdf } = await loadVectorExport()
           await exportVectorPdf(ctrl, paper, {
             copies: ctrl.hasActiveSerial() && !rowMode ? copies : 1,
             rows: rowMode ? rowPages : undefined,
@@ -926,6 +935,7 @@ export default function App() {
                 : renderAllPapers(ctrl, PNG_EXPORT_SCALE)
           if (mode === 'print') {
             // 矢量打印：复用矢量 PDF 构建，浏览器以矢量输出（清晰不失真）
+            const { printVectorPdf } = await loadVectorExport()
             await printVectorPdf(ctrl, paper, {
               copies: ctrl.hasActiveSerial() && !rowMode ? copies : 1,
               rows: rowMode ? rowPages : undefined,
@@ -971,9 +981,11 @@ export default function App() {
       return
     }
     // 多标签：无序列化/无数据时每张纸各打一页（矢量打印）
-    void printVectorPdf(ctrl, paper, { copies: 1, order: paperOrder, onlyActive: false }).catch((err) =>
-      toast.error('打印失败', { description: err instanceof Error ? err.message : String(err) }),
-    )
+    void loadVectorExport()
+      .then((m) => m.printVectorPdf(ctrl, paper, { copies: 1, order: paperOrder, onlyActive: false }))
+      .catch((err) =>
+        toast.error('打印失败', { description: err instanceof Error ? err.message : String(err) }),
+      )
   }, [rows, paper, paperOrder])
 
   const onExportPng = useCallback(() => {
@@ -1020,11 +1032,13 @@ export default function App() {
       setBatchMode('pdf')
       return
     }
-    void exportVectorPdf(ctrl, paper, { copies: 1, order: paperOrder }).catch((err) =>
-      toast.error('PDF 导出失败', {
-        description: err instanceof Error ? err.message : '请重试',
-      }),
-    )
+    void loadVectorExport()
+      .then((m) => m.exportVectorPdf(ctrl, paper, { copies: 1, order: paperOrder }))
+      .catch((err) =>
+        toast.error('PDF 导出失败', {
+          description: err instanceof Error ? err.message : '请重试',
+        }),
+      )
   }, [paper, rows])
 
   // ── 数据导入与预览 ──────────────────────────────────────
@@ -1033,6 +1047,7 @@ export default function App() {
       try {
         const ctrl = ctrlRef.current
         if (!ctrl) return
+        const { parseSpreadsheet } = await loadSpreadsheet()
         const res = await parseSpreadsheet(file)
         if (res.rows.length === 0) {
           toast.warning('未读取到数据行', { description: '请确认首行为表头' })
