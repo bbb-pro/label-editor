@@ -100,10 +100,31 @@
         border-radius: 50%;
         background: #2563eb;
       }
+      #seo-intro .seo-links {
+        margin: 0 0 24px;
+        font-size: 14px;
+      }
+      #seo-intro a {
+        color: #2563eb;
+        text-decoration: none;
+      }
+      #seo-intro a:hover {
+        text-decoration: underline;
+      }
       #seo-intro .seo-loading {
         margin: 0;
         font-size: 13px;
         color: #94a3b8;
+        animation: seo-pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes seo-pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
       }
       @media (prefers-color-scheme: dark) {
         #seo-intro {
@@ -115,6 +136,9 @@
         }
         #seo-intro li {
           color: #94a3b8;
+        }
+        #seo-intro a {
+          color: #60a5fa;
         }
       }
     </style>
@@ -219,7 +243,13 @@
           <li>多纸与页序控制：一份模板管理多张标签，支持按套或按标签排序输出</li>
           <li>完全本地运行：数据不上传服务器，可离线使用</li>
         </ul>
-        <p class="seo-loading">正在加载编辑器…</p>
+        <p class="seo-links">
+          <a href="/guide/">使用指南</a> ·
+          <a href="/guide/barcode-types.html">42 种码制怎么选</a> ·
+          <a href="/guide/label-sizes.html">标签尺寸速查</a> ·
+          <a href="/guide/batch-print.html">Excel 批量套打</a>
+        </p>
+        <p class="seo-loading">正在加载编辑器… 若长时间停留在此页面，请刷新重试</p>
       </div>
     </div>
     <noscript>
