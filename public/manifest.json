@@ -1,0 +1,16 @@
+{
+  "name": "标签编辑器 - 在线条码标签设计与打印",
+  "short_name": "标签编辑器",
+  "description": "免费在线标签编辑器，支持 Code128、QR Code 等上百种条码二维码，可自定义纸张尺寸、批量导入 Excel 数据，导出矢量 PDF 与高清 PNG。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "categories": ["business", "productivity", "utilities"],
+  "icons": [
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/favicon.ico", "sizes": "32x32 64x64", "type": "image/x-icon" }
+  ]
+}

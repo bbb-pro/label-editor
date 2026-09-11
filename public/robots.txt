@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# 编辑器为纯前端应用，所有页面均可索引
+Sitemap: https://057300.xyz/sitemap.xml
