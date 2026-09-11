@@ -23,6 +23,53 @@ import 'svg2pdf.js'
 const FONT_ALIAS = 'SimHeiPDF'
 const FONT_URL = () => `${import.meta.env.BASE_URL}fonts/simhei.ttf`
 
+/**
+ * 画布字体 → PDF 字体映射。
+ *
+ * 背景：网络上没有任何"画布字体=PDF 字体"的自动对应关系，必须显式建立映射。
+ * 策略分两类：
+ * 1) 拉丁字体 → jsPDF 内置标准字体（Helvetica / Times / Courier），
+ *    它们是 PDF 基础 14 字体，**无需内嵌**、跨平台字面稳定，且是矢量。
+ * 2) 中文字体 / 未知字体 → 内嵌 simhei 子集（唯一可用的中文字体资源）。
+ *    纯中文内容用哪种中文字体差异有限，整段走子集可保证不出方框。
+ */
+const PDF_FONT_LATIN = {
+  helvetica: 'helvetica',
+  times: 'times',
+  courier: 'courier',
+} as const
+
+/** 画布字体名（小写匹配）→ jsPDF 内置字体名；不在表内的走内嵌子集 */
+const CANVAS_TO_PDF_FONT: Record<string, string> = {
+  arial: PDF_FONT_LATIN.helvetica,
+  helvetica: PDF_FONT_LATIN.helvetica,
+  verdana: PDF_FONT_LATIN.helvetica,
+  tahoma: PDF_FONT_LATIN.helvetica,
+  'trebuchet ms': PDF_FONT_LATIN.helvetica,
+  'ms sans serif': PDF_FONT_LATIN.helvetica,
+  'microsoft sans serif': PDF_FONT_LATIN.helvetica,
+  georgia: PDF_FONT_LATIN.times,
+  'times new roman': PDF_FONT_LATIN.times,
+  times: PDF_FONT_LATIN.times,
+  'courier new': PDF_FONT_LATIN.courier,
+  courier: PDF_FONT_LATIN.courier,
+  impact: PDF_FONT_LATIN.helvetica,
+}
+
+/** 判断某段文本是否只需拉丁字形（决定能否用内置字体，避免中文变方框） */
+function isLatinOnly(text: string): boolean {
+  // 含中文（CJK 统一表意文字、扩展 A、兼容表意、全角标点等）则不能用内置字体
+  return !/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]/.test(text)
+}
+
+/** 取某对象应使用的 PDF 字体名：拉丁字体且内容纯拉丁 → 内置字体，否则 → 内嵌子集 */
+function pdfFontFor(obj: fabric.Object, content: string): string {
+  const fam = String((obj as { fontFamily?: string }).fontFamily ?? '').toLowerCase().trim()
+  const builtin = CANVAS_TO_PDF_FONT[fam]
+  if (builtin && isLatinOnly(content)) return builtin
+  return FONT_ALIAS
+}
+
 export interface VectorPdfOptions {
   copies?: number
   name?: string
@@ -213,7 +260,11 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   const align = ((it.textAlign as string) || 'left') as 'left' | 'center' | 'right' | 'justify'
   const lineHeightF = it.lineHeight ?? 1.16
 
-  doc.setFont(FONT_ALIAS)
+  // 字体：拉丁字体走 jsPDF 内置字体（字面与画布一致，如 Arial→Helvetica），
+  // 中文/未知字体走内嵌子集。粗体用内置字体时可交给 PDF 用真实 bold 字重。
+  const pdfFont = pdfFontFor(it as unknown as fabric.Object, content)
+  const useBuiltinBold = pdfFont !== FONT_ALIAS && isBold
+  doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
   doc.setFontSize(fontSizePt)
 
   const rgb = parseColor((it.fill as string) ?? '#000000') ?? [0, 0, 0]
@@ -256,8 +307,9 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
     if (rotDeg % 360 !== 0) textOpts.angle = rotDeg
     // jsPDF 画字一次
     doc.text(str, n(x), n(baseY), textOpts)
-    // 粗体近似：以极小的右偏重描一次，得到视觉加粗（中文无字重子集时的通用做法）
-    if (isBold) {
+    // 子集字体（中文）无真实字重，用极小的右偏重描一次近似加粗；
+    // 内置拉丁字体已在 setFont 时选 bold，无需再描（否则会糊边）。
+    if (isBold && !useBuiltinBold) {
       const off = MM_PER_PT * fontSizePt * 0.045
       doc.text(str, n(x + off), n(baseY), textOpts)
     }
@@ -580,7 +632,9 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
       const textOffsetMm = c._barcodeTextOffsetMm ?? 0
       // 文字带中心 + 额外偏移（mm）：>0 把文字往下推拉开与条区距离，<0 拉近
       const cy = box.top + barHmmF + textBandH / 2 + textOffsetMm
-      doc.setFont(FONT_ALIAS)
+      // 人读文字跟随该条码对象的字体：纯拉丁内容走内置字体，其余内嵌子集
+      const barFont = pdfFontFor(o as unknown as fabric.Object, rawText)
+      doc.setFont(barFont)
       doc.setFontSize(fontSizePt)
       doc.text(rawText, n(box.left + box.w / 2), n(cy + (fontSizePt / 72) * 25.4 * 0.35), { align: 'center' })
     }
@@ -634,11 +688,19 @@ async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
 
 /* ── 收集一页所有文本字符 ──────────────────────────── */
 
+/**
+ * 收集一页中「需要内嵌子集字体」的字符。
+ * 只有会用 FONT_ALIAS 渲染的文本才需要内嵌——拉丁字体且内容纯拉丁的对象
+ * 走 jsPDF 内置字体（无需内嵌），把它们排除可显著减小 PDF 体积。
+ */
 function pageChars(ctrl: CanvasController): string {
   const parts: string[] = []
   for (const o of flattenLeaves(ctrl)) {
     const kind = (o as unknown as { kind?: string }).kind
-    if (kind === 'text' || kind === 'barcode') parts.push(ctrl.contentStringFor(o))
+    if (kind !== 'text' && kind !== 'barcode') continue
+    const content = ctrl.contentStringFor(o)
+    if (!content) continue
+    if (pdfFontFor(o, content) === FONT_ALIAS) parts.push(content)
   }
   return parts.join('\n')
 }
@@ -710,9 +772,10 @@ export async function buildVectorPdf(
   })
 
   // 内嵌中文字体（失败时降级 Helvetica，不影响图形/条码导出）
+  // 仅当确有待用 FONT_ALIAS 渲染的字符时才内嵌子集，纯拉丁文档可跳过（体积更小）
   const allChars = new Set<number>()
   for (const s of textPool) for (const ch of s) allChars.add(ch.codePointAt(0)!)
-  const font = await subsetFont(allChars)
+  const font = allChars.size > 0 ? await subsetFont(allChars) : null
   if (font) font.embed(doc)
 
   // 去掉选中框（捕获干净画面）
