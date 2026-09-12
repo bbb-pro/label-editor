@@ -1296,8 +1296,9 @@ export default function App() {
           {/* 多标签条：同一个文件里做几种标签（新建 / 切换 / 删除） */}
           <div
             className={
-              'absolute left-2 z-30 flex max-w-[calc(100%-7rem)] items-center gap-1 overflow-x-auto rounded-lg border bg-white/95 p-1 shadow-md ' +
-              (isCompact ? 'top-16' : 'top-2')
+              'absolute left-6 z-30 flex max-w-[calc(100%-7rem)] items-center gap-1 overflow-x-auto rounded-lg border bg-white/95 p-1 shadow-md ' +
+              // 顶部/左侧各留 24px，避开 20px 厚的标尺（否则会压住刻度）
+              (isCompact ? 'top-16' : 'top-6')
             }
           >
             {papers.map((p) => (
@@ -1355,7 +1356,7 @@ export default function App() {
           </div>
 
           {/* 画布视口浮层：手抓平移开关 */}
-          <div className={'absolute right-2 z-30 flex flex-col items-stretch gap-1 overflow-hidden rounded-lg border bg-white/95 p-1 shadow-md ' + (isCompact ? 'top-16' : 'top-2')}>
+          <div className={'absolute right-2 z-30 flex flex-col items-stretch gap-1 overflow-hidden rounded-lg border bg-white/95 p-1 shadow-md ' + (isCompact ? 'top-16' : 'top-6')}>
             <button
               type="button"
               onClick={() => setHand((v) => !v)}
@@ -1431,7 +1432,7 @@ export default function App() {
           {/* 编组 / 对齐 / 层次 统一浮层：常显于画布顶部。
               无选中 → 整体黯淡且按钮禁用；有选中 → 高亮（ring）且可用。
               其中编组/对齐需多选(≥2)才可用，层次单个对象即可用。 */}
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center">
+          <div className="pointer-events-none absolute inset-x-0 top-6 z-20 flex justify-center">
             <div
               className={
                 'pointer-events-auto flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border bg-white/95 p-1 shadow-md transition-all duration-150 ' +

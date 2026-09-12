@@ -1,4 +1,4 @@
-// 左侧工具箱：文本 / 条码（默认 Code128，码制在属性面板切换）/ 形状（子菜单）/ 图片
+// 左侧工具箱：文本 / 条码（默认 Code128，42 种码制在属性面板切换）/ 形状（子菜单）/ 图片
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import {
   Type,
@@ -35,9 +35,14 @@ const shapeItems: { key: ToolType; label: string; Icon: typeof Square }[] = [
 ]
 
 /** 固定按钮：直接触发 add */
-const fixedItems: { key: ToolType; label: string; Icon: typeof Type; sub?: string }[] = [
+const fixedItems: { key: ToolType; label: string; Icon: typeof Type; hint?: string }[] = [
   { key: 'text', label: '文本', Icon: Type },
-  { key: 'barcode-code128', label: '条码', Icon: Barcode, sub: 'Code128' },
+  {
+    key: 'barcode-code128',
+    label: '条码/二维码',
+    Icon: Barcode,
+    hint: '插入条码 / 二维码（默认 Code128，码制在属性面板切换）',
+  },
 ]
 
 function baseBtn(active: boolean) {
@@ -53,6 +58,7 @@ function ToolBtn({
   active = false,
   onClick,
   badge,
+  hint,
   btnRef,
   triggerAttr,
 }: {
@@ -61,6 +67,8 @@ function ToolBtn({
   active?: boolean
   onClick: () => void
   badge?: string
+  /** 悬浮提示；不传则用 label */
+  hint?: string
   btnRef?: RefObject<HTMLButtonElement | null>
   /** 透传到按钮根元素的自定义属性（如 data-assets-trigger） */
   triggerAttr?: Record<string, string>
@@ -68,7 +76,7 @@ function ToolBtn({
   return (
     <button
       type="button"
-      title={label}
+      title={hint ?? label}
       ref={btnRef}
       onClick={onClick}
       {...triggerAttr}
@@ -76,11 +84,19 @@ function ToolBtn({
     >
       <Icon className="h-5 w-5" />
       {badge ? (
-        <span className="absolute bottom-0.5 text-[8px] font-semibold leading-none text-muted-foreground">
+        <span className="absolute inset-x-0 bottom-0.5 whitespace-nowrap text-center text-[8px] font-semibold leading-none text-muted-foreground">
           {badge}
         </span>
       ) : (
-        <span className="absolute bottom-0.5 text-[9px] font-medium leading-none">{label}</span>
+        // 文字较长（如「条码/二维码」）时自动降到 8px，避免溢出 44px 宽的按钮
+        <span
+          className={
+            'absolute inset-x-0 bottom-0.5 whitespace-nowrap text-center leading-none ' +
+            (label.length >= 4 ? 'text-[8px]' : 'text-[9px] font-medium')
+          }
+        >
+          {label}
+        </span>
       )}
     </button>
   )
@@ -130,11 +146,11 @@ export default function Toolbox(props: ToolboxProps) {
     <>
       <aside className="flex w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-muted/40 py-2">
         {/* 固定工具：文本 / 条码 */}
-        {fixedItems.map(({ key, label, Icon, sub }) => (
+        {fixedItems.map(({ key, label, Icon, hint }) => (
           <ToolBtn
             key={key}
             label={label}
-            badge={sub}
+            hint={hint}
             Icon={Icon}
             onClick={() => onToolChange(key)}
           />
