@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Excel 批量套打标签教程：一次导出几百张不同内容的标签</title>
+    <meta
+      name="description"
+      content="用 Excel 批量套打标签的完整流程：首行做表头、文本框名称与表头同名即自动绑定、{{列名}} 行内混排、流水号序列化、按行批量导出 PDF 与打印，附数字变科学计数法等常见问题处理。"
+    />
+    <meta
+      name="keywords"
+      content="批量套打,Excel批量打印标签,标签批量生成,数据绑定,序列化,流水号,批量导出PDF,可变数据打印"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://057300.xyz/guide/batch-print.html" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="标签编辑器" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:url" content="https://057300.xyz/guide/batch-print.html" />
+    <meta property="og:title" content="Excel 批量套打标签教程" />
+    <meta
+      property="og:description"
+      content="表头 + 名称绑定 = 一次生成几百张不同内容的标签，附常见问题排查。"
+    />
+    <meta property="og:image" content="https://057300.xyz/og-image.png" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="gh">
+      <a class="gh-brand" href="/">标签编辑器</a>
+      <nav>
+        <a href="./">使用指南</a>
+        <a href="barcode-types.html">码制怎么选</a>
+        <a href="label-sizes.html">尺寸速查</a>
+        <a href="batch-print.html" aria-current="page">批量套打</a>
+      </nav>
+    </header>
+
+    <main>
+      <article>
+        <h1>Excel 批量套打标签：一次生成几百张不同内容的标签</h1>
+        <p class="lead">
+          版式一样、内容不同 —— 这是标签制作里最常见的需求：200 个型号、500 个资产编号、一批货的批次号。
+          用数据绑定，你只需要排好<strong>一张</strong>，剩下的交给表格。
+        </p>
+
+        <h2>核心原理：一行数据 = 一张标签</h2>
+        <p>
+          表格里的<strong>第一行是表头</strong>，往下每一行是一条记录。批量输出时，编辑器会逐行把数据"灌"进模板里，每灌一行就生成一页。所以：
+        </p>
+        <ul>
+          <li>表格有 200 行数据 → 可以一次产出 200 张标签。</li>
+          <li>模板只排一次，位置、字体、条码设置全部复用。</li>
+        </ul>
+
+        <h2>第一步：把表格整理好</h2>
+        <p>要求很简单，但这一步做错后面全乱：</p>
+        <div class="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>要求</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>首行必须是表头</td>
+                <td>从第二行开始才是数据。表头里不要放标题或合并单元格。</td>
+              </tr>
+              <tr>
+                <td>一列表头 = 一个字段</td>
+                <td>例如「型号」「批次号」「数量」「客户」各占一列。</td>
+              </tr>
+              <tr>
+                <td>表头名不要重复</td>
+                <td>重名会导致绑定取错列。</td>
+              </tr>
+              <tr>
+                <td>表头前后不要带空格</td>
+                <td><code>型号</code> 和 <code> 型号</code> 是两个不同的名字。</td>
+              </tr>
+              <tr>
+                <td>长数字设为「文本」格式</td>
+                <td>见下方常见问题，这一步最容易踩坑。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>支持 <code>.xlsx</code> / <code>.xls</code> / <code>.csv</code>。空行会被自动跳过。</p>
+
+        <h2>第二步：导入表格</h2>
+        <p>
+          在数据面板里选择文件导入。导入后编辑器会读出表头，此时画面<strong>不会立刻变</strong> —— 这是故意的：你仍处在「设计态」，方便继续调整版式。
+        </p>
+        <p>想看效果，在数据列表里<strong>点任意一行</strong>，画布会立即用这一行的数据预览，方便你核对位置和字体大小。</p>
+
+        <h2>第三步：绑定字段（两种方式）</h2>
+
+        <h3>方式 A：名称绑定（推荐，最省事）</h3>
+        <p>规则只有一句：<strong>把文本框的名字改成和表头一模一样</strong>。</p>
+        <ol class="steps">
+          <li>选中画布上的文本框。</li>
+          <li>在右侧属性面板找到「名称」，把默认的「文本 1」改成表头名，例如 <code>型号</code>。</li>
+          <li>这个文本框的整体内容，就会被当前行的「型号」列替换。</li>
+        </ol>
+        <p>适合：一个框只放一个字段的情况（占比最高）。</p>
+
+        <h3>方式 B：行内混排 <code>{{列名}}</code></h3>
+        <p>如果你想在一句话中间插入数据，用双花括号写列名：</p>
+        <ul>
+          <li>输入 <code>型号：{{型号}} 批次：{{批次号}}</code></li>
+          <li>输出后变成 <code>型号：ABC-200 批次：B240915</code></li>
+        </ul>
+        <p>适合：需要固定前缀说明文字、或一行里混多个字段。</p>
+        <div class="box">
+          <strong>优先级：</strong>名称绑定的优先级更高。如果一个框既设了名称、内容里又写了 <code>{{}}</code>，会以名称绑定为准。
+        </div>
+
+        <h2>第四步：批量输出</h2>
+        <ol class="steps">
+          <li>点「导出 PDF」或「打印」。</li>
+          <li>检测到有数据绑定时，会先弹出「打印行数」对话框 —— 填入要生成的行数（例如 200）。</li>
+          <li>编辑器逐行渲染并合成输出，中途会提示进度。</li>
+        </ol>
+        <p>
+          如果还需要<strong>流水号</strong>（例如资产编号从 0001 递增到 0500），可以启用序列化：设置起始值、位数与步进，编号会自动按张递增，不需要在表格里先填好一列。
+        </p>
+
+        <h2>多尺寸标签一起输出</h2>
+        <p>
+          一份文件里可以放多张不同尺寸的纸。批量输出时可以选择页序：
+        </p>
+        <ul>
+          <li><strong>按套</strong>：A1、B1、A2、B2 …… 适合「一套多张」要配套装订或配套发放。</li>
+          <li><strong>按标签</strong>：A1、A2、B1、B2 …… 适合把同一规格的集中在一起连续打印。</li>
+        </ul>
+
+        <h2>常见问题</h2>
+
+        <h3>长数字变成了科学计数法（1.23E+14）或末尾变 000</h3>
+        <p>
+          这是 Excel 的显示行为，不是编辑器的问题。在 Excel 里把该列格式设为<strong>「文本」</strong>再输入，或在数字前加英文单引号 <code>'</code>。用 CSV 时同理，先在 Excel 里设好格式再另存。
+        </p>
+
+        <h3>编号前面的 0 不见了（00123 变成 123）</h3>
+        <p>同样是数字格式导致。把该列设为「文本」，或改用序列化功能按位数自动补零。</p>
+
+        <h3>改了名称但没变化</h3>
+        <p>按顺序检查：① 名称与表头<strong>完全一致</strong>（含空格和大小写）；② 该行这一列确实有值；③ 先点一下数据列表里的某一行进入预览态再观察。</p>
+
+        <h3>日期显示成 45000 这样的数字</h3>
+        <p>Excel 内部用序列号存日期。在 Excel 里把该列设为「日期」格式，或直接改成文本（如 <code>2026-09-12</code>）再导入。</p>
+
+        <h3>数据量很大会不会卡？</h3>
+        <p>
+          几百行没有问题。渲染在浏览器本地完成，行数特别多时可以分批导出（例如每次 200 行），避免单个 PDF 过大。
+        </p>
+
+        <h3>表格数据会上传到服务器吗？</h3>
+        <p>不会。解析、绑定、渲染全部在你的浏览器里完成，文件不上传，断网也能用。</p>
+
+        <div class="cta">
+          <p style="margin-bottom: 10px">排好一张模板，剩下的交给表格 —— 打开编辑器试试。</p>
+          <a class="btn" href="/">打开标签编辑器</a>
+        </div>
+      </article>
+    </main>
+
+    <footer>
+      <a href="/">标签编辑器</a>
+      <a href="./">使用指南</a>
+      <a href="barcode-types.html">码制怎么选</a>
+      <a href="label-sizes.html">尺寸速查</a>
+      <a href="batch-print.html">批量套打</a>
+    </footer>
+  </body>
+</html>
