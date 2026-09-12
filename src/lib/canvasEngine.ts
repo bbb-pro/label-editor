@@ -16,6 +16,8 @@ export interface ControllerEvents {
   /** 多选/编组状态（count≥2 为多对象，isGroup=true 为单个编组整体，isBarcodeGroup=true 为单个条码组） */
   onSelection?(info: { count: number; isGroup: boolean; isBarcodeGroup: boolean }): void
   onDirty(): void
+  /** 撤销/重做栈变化时通知（供 UI 更新按钮可用态） */
+  onHistoryChange?(): void
 }
 
 /** fabric 对象之外的自定义字段（不通过 extends 继承避免泛型 set 冲突） */
@@ -221,6 +223,11 @@ export class CanvasController {
   seqIndex: number | null = null
   /** 撤销栈：每次编辑前 push 的画布 JSON（canvas.toJSON()） */
   private undoStack: Array<Record<string, unknown>> = []
+  /**
+   * 重做栈：undo 时被撤销的「当前状态」压入此处。
+   * 任何新的编辑都会清空它 —— 一旦产生新分支，旧的重做路径就不再有效。
+   */
+  private redoStack: Array<Record<string, unknown>> = []
   /**
    * 拖拽/缩放/旋转开始（mouse:down）时采集的「操作前」快照。
    * object:modified 触发时若存在该快照则入撤销栈 —— 保证撤销回到操作前，
@@ -780,6 +787,58 @@ export class CanvasController {
       }
     })
     // 保留当前选择，便于连续使用多个对齐方向
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+    return true
+  }
+
+  /**
+   * 平均分布（等间距）：保持最外侧两个对象不动，把中间对象挪到"空隙相等"的位置。
+   *
+   * 与对齐的区别：对齐是按"边/中线"归位，分布是按"间隙"均分。
+   * 间隙 = (整体跨度 − 所有对象总尺寸) ÷ (对象数 − 1)，
+   * 对象有重叠时该值为负，仍按等重叠量均分（与设计软件行为一致）。
+   *
+   * @param axis 'h' 水平等间距 / 'v' 垂直等间距
+   * @returns 是否执行。需 ≥3 个独立对象 —— 2 个对象的间距由位置唯一确定，无需分布；
+   *          编组整体视为一个整体，内部子对象不参与分布。
+   */
+  distributeSelection(axis: 'h' | 'v'): boolean {
+    const { targets, kind } = this.getSelectionTargets()
+    if (kind !== 'objects' || targets.length < 3) return false
+    this.pushHistory()
+    const startKey = axis === 'h' ? 'left' : 'top'
+    const sizeKey = axis === 'h' ? 'width' : 'height'
+    // 沿分布方向按起始边排序：首、末两个对象保持原位，只挪中间
+    const order = targets
+      .map((o) => ({ o, r: o.getBoundingRect(true) }))
+      .sort((a, b) => a.r[startKey] - b.r[startKey])
+    const spanStart = order[0].r[startKey]
+    const spanEnd = order[order.length - 1].r[startKey] + order[order.length - 1].r[sizeKey]
+    const totalSize = order.reduce((s, it) => s + it.r[sizeKey], 0)
+    const gap = (spanEnd - spanStart - totalSize) / (order.length - 1)
+
+    let cursor = spanStart
+    for (const it of order) {
+      const delta = cursor - it.r[startKey]
+      if (delta !== 0) {
+        const o = it.o
+        if (Math.abs(o.angle ?? 0) < 0.5) {
+          // 无旋转：直接改 left/top 最精确
+          if (axis === 'h') o.set({ left: (o.left ?? 0) + delta })
+          else o.set({ top: (o.top ?? 0) + delta })
+        } else {
+          const c = o.getCenterPoint()
+          o.setPositionByOrigin(
+            new fabric.Point(axis === 'h' ? c.x + delta : c.x, axis === 'h' ? c.y : c.y + delta),
+            'center',
+            'center',
+          )
+        }
+        o.setCoords()
+      }
+      cursor += it.r[sizeKey] + gap
+    }
     this.canvas.requestRenderAll()
     this.events.onDirty()
     return true
@@ -2729,25 +2788,61 @@ export class CanvasController {
     this._commitHistory(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
   }
 
+  /** 栈深上限，防止长会话内存无限增长 */
+  private static readonly HISTORY_LIMIT = 40
+
+  /** 压入撤销栈（不动重做栈）；redo 内部的反向入栈要走这条，否则会把 redo 清空 */
+  private _pushUndo(snap: Record<string, unknown>) {
+    this.undoStack.push(snap)
+    if (this.undoStack.length > CanvasController.HISTORY_LIMIT) this.undoStack.shift()
+  }
+
+  /** 压入重做栈 */
+  private _pushRedo(snap: Record<string, unknown>) {
+    this.redoStack.push(snap)
+    if (this.redoStack.length > CanvasController.HISTORY_LIMIT) this.redoStack.shift()
+  }
+
   /** 把给定快照压入撤销栈（供交互前采集的 pending 快照提交） */
   private _commitHistory(snap: Record<string, unknown>) {
-    this.undoStack.push(snap)
-    // 限制栈深，防止长会话内存无限增长
-    if (this.undoStack.length > 40) this.undoStack.shift()
+    // 任何一次新编辑都让此前的重做分支失效
+    this.redoStack.length = 0
+    this._pushUndo(snap)
+    this.events.onHistoryChange?.()
   }
 
   canUndo(): boolean {
     return this.undoStack.length > 0
   }
 
-  /** Ctrl+Z：回到上一个快照 */
+  canRedo(): boolean {
+    return this.redoStack.length > 0
+  }
+
+  /** Ctrl+Z：回到上一个快照；当前状态同步存入重做栈，保证 Ctrl+Shift+Z 能再回来 */
   undo(): boolean {
     const snap = this.undoStack.pop()
     if (!snap) return false
+    this._pushRedo(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
     this._typingSeen = false
     this.canvas.discardActiveObject()
     this.loadFromJSON(snap)
     this.events.onActiveChange(null)
+    this.events.onHistoryChange?.()
+    return true
+  }
+
+  /** Ctrl+Shift+Z / Ctrl+Y：重做刚被撤销的一步 */
+  redo(): boolean {
+    const snap = this.redoStack.pop()
+    if (!snap) return false
+    // 反向：把撤销前的状态存回撤销栈。注意不能用 _commitHistory（它会清空 redo 栈）
+    this._pushUndo(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
+    this._typingSeen = false
+    this.canvas.discardActiveObject()
+    this.loadFromJSON(snap)
+    this.events.onActiveChange(null)
+    this.events.onHistoryChange?.()
     return true
   }
 

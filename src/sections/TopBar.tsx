@@ -8,6 +8,8 @@ import {
   Printer,
   ImageDown,
   FileDown,
+  Undo2,
+  Redo2,
 } from 'lucide-react'
 
 interface TopBarProps {
@@ -18,6 +20,10 @@ interface TopBarProps {
   onNew: () => void
   onImportJson: (file: File) => void
   onExportJson: () => void
+  onUndo: () => void
+  onRedo: () => void
+  canUndo: boolean
+  canRedo: boolean
   onPrint: () => void
   onExportPng: () => void
   onExportPdf: () => void
@@ -32,6 +38,10 @@ export default function TopBar(props: TopBarProps) {
     onNew,
     onImportJson,
     onExportJson,
+    onUndo,
+    onRedo,
+    canUndo,
+    canRedo,
     onPrint,
     onExportPng,
     onExportPdf,
@@ -46,6 +56,30 @@ export default function TopBar(props: TopBarProps) {
         </div>
         <span className="hidden text-sm font-semibold md:inline">标签编辑器</span>
       </div>
+
+      <Separator orientation="vertical" className="mx-1 h-6" />
+
+      {/* 历史操作：撤销 / 重做（无历史时禁用） */}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={onUndo}
+        disabled={!canUndo}
+        title="撤销（Ctrl+Z）"
+        aria-label="撤销"
+      >
+        <Undo2 className="h-4 w-4" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={onRedo}
+        disabled={!canRedo}
+        title="重做（Ctrl+Shift+Z 或 Ctrl+Y）"
+        aria-label="重做"
+      >
+        <Redo2 className="h-4 w-4" />
+      </Button>
 
       <Separator orientation="vertical" className="mx-1 h-6" />
 

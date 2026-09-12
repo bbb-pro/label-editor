@@ -17,7 +17,7 @@ import { CanvasController } from '@/lib/canvasEngine'
  */
 const loadVectorExport = () => import('@/lib/vectorExport')
 const loadSpreadsheet = () => import('@/lib/spreadsheet')
-import { mountRulers, type RulerHandle } from '@/lib/rulers'
+import { mountRulers, type RulerHandle, type RulerSelection } from '@/lib/rulers'
 import {
   exportJson,
   exportPng,
@@ -109,6 +109,15 @@ export default function App() {
   const [assetsOpen, setAssetsOpen] = useState(false)
   const panRef = useRef({ x: 0, y: 0 })
 
+  // ── 撤销/重做可用态 ────────────────────────────────
+  // 栈的变化唯一入口是 CanvasController（pushHistory / undo / redo），
+  // 由它通过 onHistoryChange 回调触发这里同步，避免在每个调用点手动维护。
+  const [history, setHistory] = useState({ canUndo: false, canRedo: false })
+  const syncHistory = useCallback(() => {
+    const ctrl = ctrlRef.current
+    setHistory({ canUndo: !!ctrl?.canUndo(), canRedo: !!ctrl?.canRedo() })
+  }, [])
+
   // 移动端：单击选中即可（移动/拉伸由 fabric 原生处理），仅在「取消选中」时收起抽屉；
   // 属性抽屉的弹出改由「双击」触发（见下方 compact 双击监听），避免单选即遮挡画布。
   useEffect(() => {
@@ -127,8 +136,13 @@ export default function App() {
     if (!canvasEl || !stage) return
 
     const ctrl = new CanvasController(canvasEl, DEFAULT_PAPER, {
-      onActiveChange: (snap) => setActive(snap),
+      onActiveChange: (snap) => {
+        setActive(snap)
+        // 选中变化的兜底刷新：部分清空路径（如 discardActiveObject）不触发 fabric 的 selection 事件
+        syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+      },
       onSelection: (info) => setSelection(info),
+      onHistoryChange: () => syncHistory(),
       onDirty: () => {
         setObjectCount(ctrl.getObjectCount())
         // 数组类派生数据：内容不变时复用旧引用，避免拖动/导出期间的无谓重渲染
@@ -212,6 +226,22 @@ export default function App() {
 
   // ── 视口缩放 + 平移（fabric viewportTransform，矢量重绘）────
 
+  /**
+   * 当前选中对象的包围盒（工作区逻辑坐标，不含 viewportTransform）。
+   * getBoundingRect(true) 取 absolute 坐标，与标尺刻度的坐标系一致，
+   * 因此拖拽/缩放过程中只需再乘 zoom 加 pan 即可得到屏幕位置。
+   */
+  const activeBounds = useCallback((): RulerSelection | null => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return null
+    const obj = ctrl.canvas.getActiveObject()
+    if (!obj) return null
+    // 第二参 calculate=true：拖拽中不读缓存，取实时几何
+    const r = obj.getBoundingRect(true, true)
+    if (r.width <= 0 && r.height <= 0) return null
+    return { left: r.left, top: r.top, width: r.width, height: r.height }
+  }, [])
+
   /** 同步标尺：视口尺寸 + 当前 zoom/pan。
    *  标尺是「屏幕空间覆盖层」，不随画布变换，故每次视图变化都要按
    *  屏幕坐标 → 纸张毫米的映射重算刻度，才能与纸张严格对齐。 */
@@ -228,8 +258,30 @@ export default function App() {
       panY: py,
       paperOffsetX: pb.left,
       paperOffsetY: pb.top,
+      selection: activeBounds(),
     })
-  }, [])
+  }, [activeBounds])
+
+  // 选中/拖拽/缩放时刷新标尺上的高亮带（OpenPrint 同款：实时显示选中范围与毫米尺寸）
+  useEffect(() => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    const cv = ctrl.canvas
+    const update = () => syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+    const names = [
+      'selection:created',
+      'selection:updated',
+      'selection:cleared',
+      'object:moving',
+      'object:scaling',
+      'object:rotating',
+      'object:modified',
+    ]
+    for (const n of names) cv.on(n, update)
+    return () => {
+      for (const n of names) cv.off(n, update)
+    }
+  }, [syncRulers])
 
   const applyView = useCallback(
     (zz: number, px: number, py: number) => {
@@ -798,7 +850,17 @@ export default function App() {
     const ctrl = ctrlRef.current
     if (!ctrl) return
     ctrl.alignSelection(align)
-  }, [])
+    // 引擎内是直接 set 坐标，不触发 fabric 的 object:modified，标尺高亮带需手动同步
+    syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+  }, [syncRulers])
+
+  /** 平均分布：保持两端不动，让相邻对象间隙相等（需 ≥3 个对象） */
+  const onDistribute = useCallback((axis: 'h' | 'v') => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    if (!ctrl.distributeSelection(axis)) return
+    syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+  }, [syncRulers])
 
   /** 图层操作：front/back/up/down（作用于当前选中对象整体） */
   const onLayer = useCallback((action: 'front' | 'back' | 'up' | 'down') => {
@@ -1090,6 +1152,20 @@ export default function App() {
     toast('已清空数据', { description: '画布已还原为 {{变量}} 原文' })
   }, [])
 
+  const onUndo = useCallback(() => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    if (ctrl.undo()) toast('已撤销')
+    syncHistory()
+  }, [syncHistory])
+
+  const onRedo = useCallback(() => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    if (ctrl.redo()) toast('已重做')
+    syncHistory()
+  }, [syncHistory])
+
   // 全局快捷键：Delete 删除 / Ctrl+C 复制 / Ctrl+V 粘贴 / Ctrl+Z 撤销 / 方向键微调
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1117,12 +1193,21 @@ export default function App() {
         }
         return
       }
+      // Ctrl+Z 撤销 / Ctrl+Shift+Z、Ctrl+Y 重做
       if (mod && (e.key === 'z' || e.key === 'Z')) {
-        if (!e.shiftKey && ctrl.canUndo()) {
-          e.preventDefault()
-          ctrl.undo()
+        e.preventDefault()
+        if (e.shiftKey) {
+          if (ctrl.redo()) toast('已重做')
+        } else if (ctrl.undo()) {
           toast('已撤销')
         }
+        syncHistory()
+        return
+      }
+      if (mod && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault()
+        if (ctrl.redo()) toast('已重做')
+        syncHistory()
         return
       }
       // 方向键微调（无对象则不拦截，避免挡住面板滚动）
@@ -1154,7 +1239,7 @@ export default function App() {
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('keyup', onUp)
     }
-  }, [])
+  }, [syncHistory])
 
   const currentRow = currentIndex >= 0 ? rows[currentIndex] ?? null : null
 
@@ -1168,6 +1253,10 @@ export default function App() {
         onNew={onNew}
         onImportJson={onImportJson}
         onExportJson={onExportJson}
+        onUndo={onUndo}
+        onRedo={onRedo}
+        canUndo={history.canUndo}
+        canRedo={history.canRedo}
         onPrint={onPrint}
         onExportPng={onExportPng}
         onExportPdf={onExportPdf}
@@ -1396,6 +1485,13 @@ export default function App() {
 
               <span className="mx-1 h-5 w-px shrink-0 bg-slate-200" />
 
+              {/* 平均分布：3 个及以上对象才有意义（2 个的间距由位置唯一确定） */}
+              <span className="shrink-0 px-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">分布</span>
+              <AlignBtn glyph="hdist" tip="水平等间距（两端不动，间隙均分）" disabled={selection.count < 3} onClick={() => onDistribute('h')} />
+              <AlignBtn glyph="vdist" tip="垂直等间距（两端不动，间隙均分）" disabled={selection.count < 3} onClick={() => onDistribute('v')} />
+
+              <span className="mx-1 h-5 w-px shrink-0 bg-slate-200" />
+
               {/* 层次 */}
               <span className="shrink-0 px-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">层次</span>
               {([
@@ -1564,13 +1660,16 @@ export default function App() {
 }
 
 /** 对齐工具小按钮：自绘示意图形，直观表达「对齐到哪里」 */
+/** 对齐 / 分布按钮的图形：前 6 个为对齐，hdist/vdist 为等间距分布 */
+type AlignGlyph = 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom' | 'hdist' | 'vdist'
+
 function AlignBtn({
   glyph,
   tip,
   onClick,
   disabled,
 }: {
-  glyph: 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom'
+  glyph: AlignGlyph
   tip: string
   onClick: () => void
   disabled?: boolean
@@ -1596,7 +1695,7 @@ function AlignBtn({
 }
 
 /** 对齐图形内容：灰色点线 = 参考位置；实心方块 = 对齐后的对象 */
-function glyphGlyph(g: 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'bottom') {
+function glyphGlyph(g: AlignGlyph) {
   const line = { stroke: '#94a3b8', strokeWidth: 1.4, strokeDasharray: '2 2' }
   const rect = { fill: 'currentColor' }
   switch (g) {
@@ -1638,6 +1737,26 @@ function glyphGlyph(g: 'left' | 'hcenter' | 'right' | 'top' | 'vcenter' | 'botto
           <line x1="4" y1="20" x2="20" y2="20" {...line} />
           <rect x="6" y="12" width="6" height="8" rx="0.5" {...rect} />
           <rect x="14" y="14" width="5" height="6" rx="0.5" {...rect} />
+        </>
+      )
+    case 'hdist':
+      return (
+        <>
+          <line x1="3" y1="4" x2="3" y2="20" {...line} />
+          <line x1="21" y1="4" x2="21" y2="20" {...line} />
+          <rect x="5" y="7" width="4" height="10" rx="0.5" {...rect} />
+          <rect x="10" y="7" width="4" height="10" rx="0.5" {...rect} />
+          <rect x="15" y="7" width="4" height="10" rx="0.5" {...rect} />
+        </>
+      )
+    case 'vdist':
+      return (
+        <>
+          <line x1="4" y1="3" x2="20" y2="3" {...line} />
+          <line x1="4" y1="21" x2="20" y2="21" {...line} />
+          <rect x="7" y="5" width="10" height="4" rx="0.5" {...rect} />
+          <rect x="7" y="10" width="10" height="4" rx="0.5" {...rect} />
+          <rect x="7" y="15" width="10" height="4" rx="0.5" {...rect} />
         </>
       )
     case 'vcenter':

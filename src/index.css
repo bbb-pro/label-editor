@@ -32,6 +32,15 @@
     --sidebar-accent-foreground: 240 5.9% 10%;
     --sidebar-border: 220 13% 91%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* ── 纸张标尺配色（对标 OpenPrint RulerOverlay） ── */
+    --ruler-bg: #ffffff;
+    --ruler-tick: #c0c4cc;
+    --ruler-label: #909399;
+    --ruler-edge: #e2e8f0;
+    --ruler-band: rgba(245, 158, 11, 0.3);
+    --ruler-band-border: rgba(217, 119, 6, 0.85);
+    --ruler-band-text: #7c2d12;
   }
 
   .dark {
@@ -62,6 +71,15 @@
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* ── 纸张标尺（深色）── */
+    --ruler-bg: #1e1e1e;
+    --ruler-tick: #555555;
+    --ruler-label: #999999;
+    --ruler-edge: #333333;
+    --ruler-band: rgba(245, 158, 11, 0.38);
+    --ruler-band-border: rgba(251, 191, 36, 0.9);
+    --ruler-band-text: #fff7ed;
   }
 }
 
