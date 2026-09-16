@@ -420,8 +420,8 @@ export class CanvasController {
     })
     this.canvas.on('object:modified', () => {
       this.clearGuides()
-      // 拖出/拖回后立即刷一次透明度视觉
-      for (const o of this.canvas.getObjects()) this.updateOutsidePaperVisual(o)
+      // 拖出/拖回后立即刷一次透明度视觉（编组/多选内也按最外层对象评估）
+      this.refreshOutsidePaperAll()
       this.emitActive()
       // 提交「拖动前」的快照（在 mouse:down 时采集）—— 必须压入旧状态，撤销才会回到操作前。
       // 直接在 modified 里 pushHistory 会把「已变换后」的状态压栈，撤销看似生效实则原地不动。
@@ -753,9 +753,15 @@ export class CanvasController {
     this.pushHistory()
     try {
       const group = activeSel.toGroup!()
+      // fabric 会把「选择容器」自身的 opacity 搬到新组上，而子对象各自还留着自己那份
+      // （多选于纸外时是 0.35）→ 两者叠乘 ≈0.12，暗得不像话。统一约定：
+      // 子对象一律 1，由「最外层对象」单独承担纸外半透明（随后 refreshOutsidePaperAll 定值）。
+      group.set({ opacity: 1 })
+      group.getObjects?.().forEach((o) => o.set({ opacity: 1 }))
       // 补打序列化，确保组对象自身 toJSON 携带子对象字段（children 各自已有 patch）
       ;(group as unknown as Record<string, unknown>).isGroupBox = true
       this.canvas.setActiveObject(group)
+      this.refreshOutsidePaperAll()
       this.canvas.requestRenderAll()
       this.emitActive()
       this.events.onDirty()
@@ -776,8 +782,14 @@ export class CanvasController {
       // fabric 官方把 group 拆回 = toActiveSelection()：子对象重新加回画布顶层并转为 ActiveSelection
       const activeSel = group.toActiveSelection() as fabric.ActiveSelection
       this.canvas.setActiveObject(activeSel)
+      // 多选容器不是要打印的对象，自身不承担透明度；让每个子对象各自评估
+      activeSel.set({ opacity: 1 })
+      activeSel.getObjects().forEach((o) => o.set({ opacity: 1 }))
       this.canvas.requestRenderAll()
       this.refreshAllContent()
+      // ⚠️ 必须在 refreshAllContent **之后**再按纸外定值：内容刷新（如条码重建）
+      // 会产出 opacity=1 的新对象，顺序反了就会被覆盖回「标签内」的纯黑。
+      this.refreshOutsidePaperAll()
       this.emitActive()
       this.events.onDirty()
       return true
@@ -793,6 +805,7 @@ export class CanvasController {
       this.canvas.discardActiveObject()
       this.canvas.requestRenderAll()
       this.refreshAllContent()
+      this.refreshOutsidePaperAll()
       this.emitActive()
       this.events.onDirty()
       return true
@@ -1434,6 +1447,26 @@ export class CanvasController {
       }
     }
     if (dirty) this.canvas.requestRenderAll()
+  }
+
+  /**
+   * 全量重算「纸外半透明」：任何会改变对象树的操作之后都必须调用
+   * （编组 / 解组 / 载入模板 / 撤销重做 / 拖动结束）。
+   *
+   * 为什么必须重算，而不是跟着操作顺手改一下：
+   *  · opacity 是**顶层单位**的属性 —— 组内的子对象不该单独降透明度，
+   *    否则会与组自身的 opacity 叠乘（0.35×0.35≈0.12，暗到看不清）；
+   *  · 组从纸外拆回独立对象时，fabric 恢复的是子对象**自己的** opacity（1），
+   *    若不再评估一次，解组出来的对象就会按「标签内」的纯黑显示，
+   *    丢掉「纸外 · 不打印」的视觉提示（用户报的「拖到标签外解组后又变黑」）。
+   *
+   * 真编组内的子对象不在 canvas 顶层，所以这里天然只按「最外层对象」评估一次。
+   */
+  refreshOutsidePaperAll() {
+    for (const o of this.canvas.getObjects()) {
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
+      this.updateOutsidePaperVisual(o)
+    }
   }
 
   getCanvasSizePx() {
@@ -2951,7 +2984,7 @@ export class CanvasController {
       }
       // 载入后重建"纸卡"背景 + 刷新纸外对象的半透明视觉
       this.recreatePaperRects()
-      for (const o of this.canvas.getObjects()) if (!(o as { excludeFromExport?: boolean }).excludeFromExport) this.updateOutsidePaperVisual(o)
+      this.refreshOutsidePaperAll()
       this.refreshAllContent()
       // 导入后保持当前视口(避免模板里残留的视图变换影响显示)
       this.canvas.setViewportTransform([this.vptZoom, 0, 0, this.vptZoom, this.vptPan.x, this.vptPan.y])

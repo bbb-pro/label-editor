@@ -108,6 +108,13 @@ export default function App() {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [assetsOpen, setAssetsOpen] = useState(false)
   const panRef = useRef({ x: 0, y: 0 })
+  /**
+   * 视图是否仍处于「自动」状态（由打开/新建/导入时的 100% 居中视图设定，用户还没自己动过）。
+   * true  → 视口尺寸一变就重新居中（保持当前缩放），保证首屏始终「居中 + 实际大小」；
+   * false → 用户已自己平移/缩放过，之后一律不干预他的视图。
+   * 置 true：zoomTo100；置 false：setView / setPanView（都是用户主动操作）。
+   */
+  const autoViewRef = useRef(true)
 
   // ── 撤销/重做可用态 ────────────────────────────────
   // 栈的变化唯一入口是 CanvasController（pushHistory / undo / redo），
@@ -305,6 +312,8 @@ export default function App() {
 
   const setPanView = useCallback(
     (px: number, py: number) => {
+      // 用户主动平移（手抓/中键拖动/切标签/适配）→ 交出视图控制权
+      autoViewRef.current = false
       panRef.current = { x: px, y: py }
       applyView(zoomRef.current, px, py)
     },
@@ -314,6 +323,8 @@ export default function App() {
   /** 一次性设定 zoom + pan（避免滚轮缩放时两次渲染造成抖动） */
   const setView = useCallback(
     (zz: number, px: number, py: number) => {
+      // 用户主动缩放（滚轮/±按钮/双指）→ 交出视图控制权
+      autoViewRef.current = false
       const z = Math.min(6, Math.max(0.2, zz))
       zoomRef.current = z
       panRef.current = { x: px, y: py }
@@ -343,6 +354,9 @@ export default function App() {
     const p = panForCenteredPaper(1)
     setPanView(p.x, p.y)
     applyZoom(1)
+    // 这一步定义的是「新鲜的规范视图」：重新交回自动居中，
+    // 这样接下来的布局 reflow（字体/面板/滚动条）不会再把它推偏。
+    autoViewRef.current = true
   }, [applyZoom, setPanView, panForCenteredPaper])
 
   const fitToView = useCallback(() => {
@@ -424,10 +438,39 @@ export default function App() {
     stage.addEventListener('wheel', onWheel, { passive: false })
     const mountedAt = Date.now()
     let roRaf: number | null = null
+    const lastSize = { w: stage.clientWidth, h: stage.clientHeight }
+    const lastWin = { w: window.innerWidth, h: window.innerHeight }
     const ro = new ResizeObserver(() => {
       const ctrl = ctrlRef.current
-      if (ctrl) ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
+      if (!ctrl) return
+      const w = stage.clientWidth
+      const h = stage.clientHeight
+      const sizeChanged = w !== lastSize.w || h !== lastSize.h
+      lastSize.w = w
+      lastSize.h = h
+      ctrl.setViewportSize(w, h)
       syncRulers(zoomRef.current, panRef.current.x, panRef.current.y)
+      // ① 视图仍是「打开/新建」时程序设的那份（用户还没自己动过）：
+      //    视口尺寸一变就重新居中，且**保持缩放**。
+      //    · 必须重新居中：视口变宽（右侧属性栏消失、滚动条消失、紧凑布局切换）时
+      //      pan 不变，标签会停在原处 → 看起来「偏左」（实测窄窗口偏 -145px）；
+      //    · 不能 fit：那会把「实际大小 100%」改成适配缩放，首开就不再是 1:1 了。
+      if (autoViewRef.current) {
+        if (sizeChanged) {
+          const p = panForCenteredPaper(zoomRef.current)
+          setPanView(p.x, p.y)
+          // setPanView 会把 autoView 置 false（它被用户操作复用），这里补回来
+          autoViewRef.current = true
+        }
+        return
+      }
+      // ② 用户已自己缩放/平移过：只在「浏览器窗口本身」尺寸变化时才自动适配一次。
+      //    面板开合 / 底栏伸缩 / 滚动条出现消失导致的画布尺寸变化不动用户视图 ——
+      //    否则他刚设好的缩放会被悄悄改成适配比例（「怎么不是实际大小了」）。
+      const winChanged = window.innerWidth !== lastWin.w || window.innerHeight !== lastWin.h
+      lastWin.w = window.innerWidth
+      lastWin.h = window.innerHeight
+      if (!winChanged) return
       // 初始挂载/刷新后的一小段时间内容器会因字体加载等发生多次 reflow，
       // 若此时自动 fit 会覆盖掉“首开/新建”设置的 100%。首段宽限期内忽略。
       if (Date.now() - mountedAt < 700) return
@@ -438,14 +481,14 @@ export default function App() {
         fitToView()
       })
     })
-      ro.observe(stage)
+    ro.observe(stage)
     return () => {
       stage.removeEventListener('wheel', onWheel)
       if (roRaf != null) cancelAnimationFrame(roRaf)
       ro.disconnect()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fitToView, setView])
+  }, [fitToView, setView, panForCenteredPaper, setPanView])
 
   // 开启手抓平移时：临时禁用画布框选并取消选中，避免拖动画布时误选对象
   useEffect(() => {
