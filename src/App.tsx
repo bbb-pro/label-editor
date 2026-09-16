@@ -696,33 +696,75 @@ export default function App() {
   }, [setPanView, fitToView])
 
   // ── 移动端：双击（或双指轻点）弹出属性抽屉 ──────────────
+  // ⚠️ 「双指轻点」必须与「双指缩放」区分开：缩放的起手同样是两指几乎同时落下
+  //    （间隔 < 320ms），只凭两次 down 的时间差就 open 的话，每次捏合都会弹出
+  //    属性抽屉（用户报过）。所以改成「抬手时才确认」：两指落下后全程没动过才算轻点。
+  // ⚠️ 监听挂在 `.canvas-container` 而非 upper-canvas：双指手势一开始就会把指针
+  //    capture 到容器上，此后 move/up 不再派发给 upper-canvas（挂在它上面收不到）。
   useEffect(() => {
     if (!isCompact) return
     const wrap = canvasWrapRef.current
-    const upper = wrap?.querySelector('canvas.upper-canvas') as HTMLCanvasElement | null
-    if (!upper) return
+    if (!wrap) return
+    const TAP_MS = 320 // 两次落下的最大间隔
+    const MOVE_TOL = 8 // px：手指按下瞬间的抖动不算「移动」
     let last = 0
+    /**
+     * 各触点的「落点」与「当前位置」。
+     * ⚠️ 必须按**每个触点相对自己的落点**判定是否移动：只记一个参考点（比如第二指
+     * 落点）的话，第一指与它天然相隔上百 px，第一指的正常抖动会被误判成移动。
+     */
+    const pts = new Map<number, { fx: number; fy: number; cx: number; cy: number }>()
+    let tapCandidate = false
+    const drifted = () =>
+      [...pts.values()].some((p) => Math.hypot(p.cx - p.fx, p.cy - p.fy) > MOVE_TOL)
     const open = () => {
-      if (!hand) setSheetOpen(true)
+      if (!handRef.current) setSheetOpen(true)
     }
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType === 'mouse') return // 桌面走原生 dblclick
+      pts.set(e.pointerId, { fx: e.clientX, fy: e.clientY, cx: e.clientX, cy: e.clientY })
       const now = Date.now()
-      if (now - last < 320 && !hand) {
-        open()
+      if (now - last < TAP_MS && !handRef.current) {
         last = 0
+        // 已有触点若已拖开，说明用户是在拖 —— 第二指只是顺带落下，不算轻点
+        tapCandidate = !drifted()
       } else {
         last = now
+        tapCandidate = false
       }
     }
-    const onDbl = () => open()
-    upper.addEventListener('pointerdown', onPointerDown)
-    upper.addEventListener('dblclick', onDbl)
-    return () => {
-      upper.removeEventListener('pointerdown', onPointerDown)
-      upper.removeEventListener('dblclick', onDbl)
+    const onPointerMove = (e: PointerEvent) => {
+      const p = pts.get(e.pointerId)
+      if (!p) return
+      p.cx = e.clientX
+      p.cy = e.clientY
+      if (tapCandidate && drifted()) tapCandidate = false
     }
-  }, [isCompact, hand])
+    const onPointerUp = (e: PointerEvent) => {
+      pts.delete(e.pointerId)
+      if (tapCandidate) {
+        tapCandidate = false
+        open()
+      }
+    }
+    const onPointerCancel = (e: PointerEvent) => {
+      pts.delete(e.pointerId)
+      tapCandidate = false
+    }
+    const onDbl = () => open()
+    wrap.addEventListener('pointerdown', onPointerDown)
+    wrap.addEventListener('pointermove', onPointerMove)
+    wrap.addEventListener('pointerup', onPointerUp)
+    wrap.addEventListener('pointercancel', onPointerCancel)
+    wrap.addEventListener('dblclick', onDbl)
+    return () => {
+      wrap.removeEventListener('pointerdown', onPointerDown)
+      wrap.removeEventListener('pointermove', onPointerMove)
+      wrap.removeEventListener('pointerup', onPointerUp)
+      wrap.removeEventListener('pointercancel', onPointerCancel)
+      wrap.removeEventListener('dblclick', onDbl)
+    }
+  }, [isCompact])
 
   // ── 添加元素（tool 触发）────────────────────────────────
   const safeAddBarcode = useCallback((ctrl: CanvasController, type: BarcodeType) => {
