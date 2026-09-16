@@ -48,6 +48,13 @@ interface CustomFields {
    * <0 把文字上移靠近条区。默认 0。
    */
   _barcodeTextOffsetMm?: number
+  /**
+   * 上次真正渲染条码时用的「指纹」（码制 + 解析后文案 + 设置 + 文字偏移）。
+   * 仅运行期缓存，不参与序列化：refreshAllContent 每次都会遍历所有条码，
+   * 若内容没变就跳过重建 —— 否则每次刷新都会把画布上每个条码整组重建一次
+   * （几十个矩形 + 一次 bwip-js 编码），既慢，又会在条码嵌于组/多选时引发坐标错乱。
+   */
+  _barcodeRendered?: string
   originalText?: string
   /**
    * 段落文本（kind='text' 的子类型）：一个定宽、自动换行的多行区域文本框。
@@ -90,6 +97,14 @@ const isStrokeKind = (k: ElementKind | undefined): boolean => k === 'rect' || k 
  *  - svg：素材由多个 path 组成，矢量导出按整段 SVG 重绘，拆开会丢失结构。 */
 const isAtomicGroupKind = (k: ElementKind | undefined): boolean => k === 'barcode' || k === 'svg'
 
+/** 条码渲染指纹：这四项不变时，重建出的条码组一定与现有一致（可安全跳过重建） */
+const barcodeSignature = (
+  type: BarcodeType,
+  text: string,
+  settings: BarcodeRenderSettings,
+  offsetMm: number,
+): string => `${type}\u0001${text}\u0001${offsetMm}\u0001${JSON.stringify(settings)}`
+
 /** 工作区在标签四周多留的边距(mm)。对象可拖出标签"暂存"到这里；仅标签内对象会打印。
  *  画布会在对象被拖近边缘时自动向外扩张（等效"无限画布"），此值为初始留白。
  *  默认给很大的留白，让画布一上来就"近似无限"，拖动到更远处仍会自动续扩。 */
@@ -104,6 +119,45 @@ const PAPER_GAP_MM = 20
 /** 取自定义字段读写器（类型断言，绕开 fabric 泛型 set） */
 function cf(o: fabric.Object): fabric.Object & CustomFields {
   return o as fabric.Object & CustomFields
+}
+
+/** 对象的「工作区绝对」包围盒（逻辑坐标，不含视口变换）。
+ *
+ *  ⚠️ 不能直接用 obj.getBoundingRect(true)：该值只对**顶层对象**等于绝对坐标。
+ *  编组 / 多选（ActiveSelection）里的子对象保留的是「父容器内的局部坐标」，
+ *  直接拿去和纸张范围比较必然误判为纸外，表现为：
+ *    · 多选拖动 / 编组时整组误变 0.35 半透明（"怎么突然变灰了"）；
+ *    · 编组内的条码被导出过滤掉（PDF 里凭空消失）。
+ *  这里沿 group 链把父容器变换逐级左乘（外层在左），把子对象的包围盒还原到工作区坐标。 */
+function absoluteBounds(obj: fabric.Object): { left: number; top: number; width: number; height: number } {
+  const b = obj.getBoundingRect(true)
+  let m: number[] | null = null
+  let p: fabric.Object | undefined = obj.group
+  while (p) {
+    const pm = p.calcTransformMatrix()
+    m = m ? fabric.util.multiplyTransformMatrices(pm, m) : pm
+    p = p.group
+  }
+  if (!m) return b
+  const pts: Array<[number, number]> = [
+    [b.left, b.top],
+    [b.left + b.width, b.top],
+    [b.left + b.width, b.top + b.height],
+    [b.left, b.top + b.height],
+  ]
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const [x, y] of pts) {
+    const nx = m[0] * x + m[2] * y + m[4]
+    const ny = m[1] * x + m[3] * y + m[5]
+    if (nx < minX) minX = nx
+    if (nx > maxX) maxX = nx
+    if (ny < minY) minY = ny
+    if (ny > maxY) maxY = ny
+  }
+  return { left: minX, top: minY, width: maxX - minX, height: maxY - minY }
 }
 
 /** 人类可读的对象类型名 */
@@ -1341,9 +1395,10 @@ export class CanvasController {
     this._suppressDirty = false
   }
 
-  /** 判断对象是否在任意一张标签纸内（用于导出过滤 + 视觉提示） */
+  /** 判断对象是否在任意一张标签纸内（用于导出过滤 + 视觉提示）。
+   *  经 absoluteBounds 还原绝对坐标，编组/多选内的子对象同样正确。 */
   isObjectInPaper(obj: fabric.Object): boolean {
-    const b = obj.getBoundingRect(true)
+    const b = absoluteBounds(obj)
     return this.papers.some((p) => {
       const right = p.left + mmToPx(p.widthMm)
       const bottom = p.top + mmToPx(p.heightMm)
@@ -1355,7 +1410,7 @@ export class CanvasController {
   isObjectInPaperId(obj: fabric.Object, paperId: string): boolean {
     const p = this.papers.find((x) => x.id === paperId)
     if (!p) return false
-    const b = obj.getBoundingRect(true)
+    const b = absoluteBounds(obj)
     const right = p.left + mmToPx(p.widthMm)
     const bottom = p.top + mmToPx(p.heightMm)
     return b.left < right && b.left + b.width > p.left && b.top < bottom && b.top + b.height > p.top
@@ -1730,7 +1785,8 @@ export class CanvasController {
     // 2D 以正方形边长(mm)为目标；一维码以「条区高度(mm)」为目标（文字带在条区之下叠加）
     const targetMm = is2d ? 18 : type === 'itf14' ? 12 : 8
     const settings = defaultSettingsFor(type)
-    const built = this.buildBarcodeGroup(type, this.resolveDesign(raw), settings)
+    const design = this.resolveDesign(raw)
+    const built = this.buildBarcodeGroup(type, design, settings)
     if (!built) return
     const { group, w, h } = built
     // 2D 码必须等比；一维码按条区锚定 + 「超高」保底容纳人读文字
@@ -1750,6 +1806,8 @@ export class CanvasController {
     c._barcodeUnit = { w: built.w, barH: built.barH }
     c._barcodeTextScale = k
     c._barcodeTextOffsetMm = 0
+    // 记录渲染指纹：内容没变时 refreshAllContent 就不会再重建这个条码
+    c._barcodeRendered = barcodeSignature(type, design, settings, 0)
     // 让新增条码的人读文字首帧就以「字号」清晰呈现（方正、不随组缩放被压小）
     if (!is2d) this.applyBarcodeTextCompensation(group)
     group.set({ left: this.paperCenter().x - (w * k) / 2, top: this.paperCenter().y - (h * k) / 2 })
@@ -1872,7 +1930,12 @@ export class CanvasController {
     }
   }
 
-  private replaceBarcodeObject(old: fabric.Object, type: BarcodeType, text: string, settings: BarcodeRenderSettings) {
+  private replaceBarcodeObject(
+    old: fabric.Object,
+    type: BarcodeType,
+    text: string,
+    settings: BarcodeRenderSettings,
+  ): boolean {
     const oc = cf(old)
     const built = this.buildBarcodeGroup(
       type,
@@ -1880,7 +1943,7 @@ export class CanvasController {
       settings,
       oc._barcodeTextOffsetMm || 0,
     )
-    if (!built) return
+    if (!built) return false
     const group = built.group
     const is2d = is2dType(type)
     const curW = old.getScaledWidth()
@@ -1951,18 +2014,39 @@ export class CanvasController {
     nc._barcodeSettings = oc._barcodeSettings
     nc._barcodeUnit = { w: built.w, barH: built.barH }
     nc._barcodeTextOffsetMm = oc._barcodeTextOffsetMm || 0
+    // 记录本次渲染指纹，供 rerenderBarcode 判断「内容没变就别重建」
+    nc._barcodeRendered = barcodeSignature(type, text, settings, nc._barcodeTextOffsetMm)
     // 重建后按「可读文字字号」刷新人读文字视觉：文字不随拉伸/改码制变化，仅字号生效
     if (!is2d && settings.showText !== false) this.applyBarcodeTextCompensation(group)
-    const wasActive = this.canvas.getActiveObject() === old
-    this._suppressDirty = true
-    this.canvas.remove(old)
     this.patchSerialize(group)
     this.applyLockState(group)
-    this.canvas.add(group)
+    this._suppressDirty = true
+    // ⚠️ 替换必须区分「顶层对象」与「编组/多选里的子对象」：
+    //   - 顶层：canvas.remove(old) + canvas.add(group)，left/top 即绝对坐标；
+    //   - 嵌套：**绝不能走 canvas.add** —— 子对象的 left/top 是「父容器内的局部坐标」，
+    //     挂到画布顶层会被当成绝对坐标，条码立刻飞到工作区原点附近（看起来就是"消失"）。
+    //     正确做法是在父容器的 _objects 里原位替换：局部坐标、层序、与父容器的关系全部保留。
+    const parent = ((old as { group?: fabric.Object | null }).group ?? null) as fabric.Object | null
+    const siblings = parent
+      ? ((parent as unknown as { _objects?: fabric.Object[] })._objects ?? null)
+      : null
+    const at = siblings ? siblings.indexOf(old) : -1
+    if (siblings && at >= 0) {
+      siblings[at] = group
+      ;(group as { group?: fabric.Object | null }).group = parent
+      ;(old as { group?: fabric.Object | null }).group = null
+      parent!.dirty = true
+      parent!.setCoords()
+    } else {
+      const wasActive = this.canvas.getActiveObject() === old
+      this.canvas.remove(old)
+      this.canvas.add(group)
+      if (wasActive) this.canvas.setActiveObject(group)
+    }
     this._suppressDirty = false
-    if (wasActive) this.canvas.setActiveObject(group)
     group.setCoords()
     this.canvas.requestRenderAll()
+    return true
   }
 
   /** 切换条码对象码制（并重新渲染） */
@@ -2577,6 +2661,15 @@ export class CanvasController {
     const settings = c._barcodeSettings ?? defaultSettingsFor(type)
     // 显示文案 = 前后缀 + 原文 + 序列/列/跨对象解析（序列化对象再套末尾数字）
     const text = this.finalizeSerial(obj, this.resolveDesign(this.decoratedDesign(c), obj))
+    // ⚠️ 内容指纹相同就不要再重建。refreshAllContent 会遍历画布上所有条码，
+    // 无条件重建不仅白跑一次 bwip-js + 几十个矩形，更关键的是：条码若嵌在
+    // 编组/多选里，重建会把新对象挂到画布顶层、并沿用「父容器内的局部坐标」，
+    // 表现为解组/刷新后条码凭空消失（飞到工作区原点附近）。
+    // getObjects().length 用于排除「载入模板后只剩空壳组」的情况。
+    const hasRects = ((obj as fabric.Group).getObjects?.() ?? []).length > 0
+    if (hasRects && c._barcodeRendered === barcodeSignature(type, text, settings, c._barcodeTextOffsetMm || 0)) {
+      return
+    }
     try {
       renderBarcodeVectorRects(type, text, settings) // 校验内容合法性（不合法则保留上一帧）
     } catch {
