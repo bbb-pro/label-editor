@@ -504,9 +504,11 @@ export default function App() {
     }
   }, [hand])
 
-  // ── 画布手势：双指缩放（任何模式下直接可用）+ hand 模式下的单指平移 ────
+  // ── 画布手势：双指缩放 + 双指平移（任何模式下直接可用）+ hand 模式下的单指平移 ──
   // 双指不再要求先切「手抓」工具：单指一律放行给 fabric 编辑对象，只有触点数 ≥2
-  // 时才接管（以双指中点为锚点缩放），与 Figma / Canva 的手感一致。
+  // 时才接管。双指是完整的「缩放 + 平移」——捏合/张开改缩放（以双指中点为锚点，
+  // 不漂移），两指一起按住拖动则平移画布，与开手抓工具后单指拖动的手感一致；
+  // 两者可同时发生。与 Figma / Canva 同源。
   const handRef = useRef(hand)
   useEffect(() => {
     handRef.current = hand
@@ -519,7 +521,11 @@ export default function App() {
     if (!el) return
     const pts = new Map<number, { x: number; y: number }>()
     let lastDist = 0
+    /** 上一次的双指中点（相对容器左上角，即 pan 所在的坐标系） */
+    let lastMid: { x: number; y: number } | null = null
     let pinching = false
+    /** 容器矩形缓存：一次手势只量一次，避免每帧 getBoundingClientRect 强制 layout */
+    let rect: DOMRect | null = null
     /** 进入双指前 fabric 的框选开关，退出时还原 */
     let savedSelection: boolean | undefined
 
@@ -527,6 +533,26 @@ export default function App() {
       const p = Array.from(pts.values())
       if (p.length < 2) return 0
       return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)
+    }
+    /** 双指中点（相对容器左上角，与滚轮缩放同一坐标系 = pan 的坐标系） */
+    const pinchMid = () => {
+      const p = Array.from(pts.values())
+      if (p.length < 2) return { x: 0, y: 0 }
+      if (!rect) rect = el.getBoundingClientRect()
+      return {
+        x: (p[0].x + p[1].x) / 2 - rect.left,
+        y: (p[0].y + p[1].y) / 2 - rect.top,
+      }
+    }
+    /**
+     * 重置双指基准（距离 + 中点）。
+     * 触点集合一变（1→2、2→3、3→2、抬手剩两指…），"上一帧的中点/间距"就不再是同一
+     * 组手指的，继续沿用会让画面瞬间跳变，所以每次都重新取样。
+     */
+    const resetPinchBase = () => {
+      rect = null
+      lastDist = pinchDist()
+      lastMid = pinchMid()
     }
     /**
      * 进入双指手势：记录基准距离、把两根手指都收归本容器，并**打断 fabric 已经
@@ -537,7 +563,7 @@ export default function App() {
      */
     const beginPinch = () => {
       pinching = true
-      lastDist = pinchDist()
+      resetPinchBase()
       for (const id of pts.keys()) {
         try {
           el.setPointerCapture(id)
@@ -560,6 +586,8 @@ export default function App() {
       if (!pinching) return
       pinching = false
       lastDist = 0
+      lastMid = null
+      rect = null
       const c = ctrlRef.current?.canvas
       if (c && savedSelection !== undefined) {
         // hand 模式下引擎本身就要求 selection = false，还原时以它为准
@@ -583,6 +611,8 @@ export default function App() {
         }
       } else if (pts.size === 2) {
         beginPinch()
+      } else if (pts.size > 2) {
+        resetPinchBase() // 三指起手：仍取前两指为基准，但基准必须重取
       }
     }
     const onMove = (e: PointerEvent) => {
@@ -596,24 +626,25 @@ export default function App() {
         if (handRef.current) setPanView(panRef.current.x + dx, panRef.current.y + dy)
       } else if (pts.size >= 2) {
         if (!pinching) beginPinch() // 三指起手时补一次（只取前两指）
+        const mid = pinchMid()
         const d = pinchDist()
-        if (lastDist > 0 && d > 0) {
-          // 以「双指中点」为锚点缩放：中点在缩放前后屏幕位置保持不变，
-          // 而非像 applyZoom 那样固定 pan（锚定左上角，导致画面漂移）。公式与滚轮缩放同源。
+        if (lastDist > 0 && d > 0 && lastMid) {
           const z = zoomRef.current
           const zz = Math.min(6, Math.max(0.2, z * (d / lastDist)))
-          if (zz !== z) {
-            const pv = Array.from(pts.values())
-            const rect = el.getBoundingClientRect()
-            const mx = (pv[0].x + pv[1].x) / 2 - rect.left
-            const my = (pv[0].y + pv[1].y) / 2 - rect.top
-            const pan = panRef.current
-            const nx = mx - (mx - pan.x) * (zz / z)
-            const ny = my - (my - pan.y) * (zz / z)
-            setView(zz, nx, ny)
-          }
+          const pan = panRef.current
+          // 统一的「缩放 + 平移」：把**上一次**的双指中点所对应的逻辑点，落到**当前**中点。
+          //   · 间距变化 → 缩放，且中点原地不动（锚点不漂移，公式与滚轮缩放同源）
+          //   · 中点移动 → 平移画布，与开手抓工具后单指拖动的手感一致
+          //   · 两者可同时发生（一边捏一边挪）
+          // 纯平移时间距不变 → zz === z → k === 1 → nx = pan.x + Δ中点，恰好 1:1 跟手。
+          // 旧实现只在 zz !== z 时才 setView，于是「双指按住平移」完全没反应。
+          const k = zz / z
+          const nx = mid.x - (lastMid.x - pan.x) * k
+          const ny = mid.y - (lastMid.y - pan.y) * k
+          if (zz !== z || nx !== pan.x || ny !== pan.y) setView(zz, nx, ny)
         }
         lastDist = d
+        lastMid = mid
       }
     }
     const onUp = (e: PointerEvent) => {
@@ -624,6 +655,7 @@ export default function App() {
         /* 未 capture 或指针已释放，忽略 */
       }
       if (pts.size < 2) endPinch()
+      else resetPinchBase() // 三指抬起一指：取用的那两指换了，基准必须重取，否则画面跳变
     }
     el.style.touchAction = 'none'
     el.addEventListener('pointerdown', onDown)
@@ -1515,7 +1547,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setHand((v) => !v)}
-              title={hand ? '手抓平移中（点选对象请关闭）' : '开启手抓平移（双指缩放随时可用，不必开启）'}
+              title={hand ? '手抓平移中（点选对象请关闭）' : '开启手抓平移（双指缩放 / 平移随时可用，不必开启）'}
               className={
                 'flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors ' +
                 (hand ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-accent')
