@@ -504,24 +504,86 @@ export default function App() {
     }
   }, [hand])
 
-  // ── 手抓平移 / 双指缩放（hand 工具开启时接管画布指针）────
+  // ── 画布手势：双指缩放（任何模式下直接可用）+ hand 模式下的单指平移 ────
+  // 双指不再要求先切「手抓」工具：单指一律放行给 fabric 编辑对象，只有触点数 ≥2
+  // 时才接管（以双指中点为锚点缩放），与 Figma / Canva 的手感一致。
+  const handRef = useRef(hand)
+  useEffect(() => {
+    handRef.current = hand
+    const wrap = canvasWrapRef.current
+    if (wrap) wrap.style.cursor = hand ? 'grab' : ''
+  }, [hand])
+
   useEffect(() => {
     const el = canvasWrapRef.current
-    if (!hand || !el) return
+    if (!el) return
     const pts = new Map<number, { x: number; y: number }>()
     let lastDist = 0
-    let dragging = false
+    let pinching = false
+    /** 进入双指前 fabric 的框选开关，退出时还原 */
+    let savedSelection: boolean | undefined
 
     const pinchDist = () => {
       const p = Array.from(pts.values())
       if (p.length < 2) return 0
       return Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)
     }
+    /**
+     * 进入双指手势：记录基准距离、把两根手指都收归本容器，并**打断 fabric 已经
+     * 开始的拖拽/框选**（`abortActiveTransform`）。最后这步是关键 —— fabric 走的是
+     * touchstart/touchmove，pointer capture 拦不住它，第一根手指落下时它往往已经
+     * 把对象拖起来了；不打断的话第二根手指会被它当成一次新的选择，选择框乱跳，
+     * 对象也会被误拖到半路。
+     */
+    const beginPinch = () => {
+      pinching = true
+      lastDist = pinchDist()
+      for (const id of pts.keys()) {
+        try {
+          el.setPointerCapture(id)
+        } catch {
+          /* 指针已失效（抬手竞态），忽略 */
+        }
+      }
+      const ctrl = ctrlRef.current
+      // 打断第一根手指可能已经让 fabric 开始的拖拽/框选，并把对象还原到手势前的
+      // 几何（详情见引擎 abortActiveTransform：不还原的话对象会被当成拖到半路，
+      // 既没进历史，位置也丢了）
+      ctrl?.abortActiveTransform()
+      const c = ctrl?.canvas
+      if (!c) return
+      savedSelection = c.selection
+      c.selection = false
+      c.requestRenderAll()
+    }
+    const endPinch = () => {
+      if (!pinching) return
+      pinching = false
+      lastDist = 0
+      const c = ctrlRef.current?.canvas
+      if (c && savedSelection !== undefined) {
+        // hand 模式下引擎本身就要求 selection = false，还原时以它为准
+        c.selection = savedSelection && !handRef.current
+        c.requestRenderAll()
+      }
+      savedSelection = undefined
+    }
+
     const onDown = (e: PointerEvent) => {
-      el.setPointerCapture(e.pointerId)
+      // 鼠标不进手势系统（桌面端用滚轮 / 中键 / 抓手按钮）
+      if (e.pointerType === 'mouse' && !handRef.current) return
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY })
-      dragging = true
-      if (pts.size === 2) lastDist = pinchDist()
+      if (pts.size === 1) {
+        if (handRef.current) {
+          try {
+            el.setPointerCapture(e.pointerId)
+          } catch {
+            /* noop */
+          }
+        }
+      } else if (pts.size === 2) {
+        beginPinch()
+      }
     }
     const onMove = (e: PointerEvent) => {
       if (!pts.has(e.pointerId)) return
@@ -530,10 +592,12 @@ export default function App() {
       const dy = e.clientY - prev.y
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY })
       if (pts.size === 1) {
-        if (dragging) setPanView(panRef.current.x + dx, panRef.current.y + dy)
+        // 单指：仅 hand 模式下平移画布，其余情况交给 fabric 拖对象/框选
+        if (handRef.current) setPanView(panRef.current.x + dx, panRef.current.y + dy)
       } else if (pts.size >= 2) {
+        if (!pinching) beginPinch() // 三指起手时补一次（只取前两指）
         const d = pinchDist()
-        if (lastDist > 0) {
+        if (lastDist > 0 && d > 0) {
           // 以「双指中点」为锚点缩放：中点在缩放前后屏幕位置保持不变，
           // 而非像 applyZoom 那样固定 pan（锚定左上角，导致画面漂移）。公式与滚轮缩放同源。
           const z = zoomRef.current
@@ -554,11 +618,14 @@ export default function App() {
     }
     const onUp = (e: PointerEvent) => {
       pts.delete(e.pointerId)
-      el.releasePointerCapture?.(e.pointerId)
-      if (pts.size === 0) dragging = false
+      try {
+        el.releasePointerCapture(e.pointerId)
+      } catch {
+        /* 未 capture 或指针已释放，忽略 */
+      }
+      if (pts.size < 2) endPinch()
     }
     el.style.touchAction = 'none'
-    el.style.cursor = 'grab'
     el.addEventListener('pointerdown', onDown)
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
@@ -569,7 +636,7 @@ export default function App() {
       el.removeEventListener('pointerup', onUp)
       el.removeEventListener('pointercancel', onUp)
     }
-  }, [hand, setPanView, setView])
+  }, [setPanView, setView])
 
   // ── 按住滚轮（中键）拖动画布平移（与 hand 工具、滚轮缩放互不冲突）──
   useEffect(() => {
@@ -1406,7 +1473,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setHand((v) => !v)}
-              title={hand ? '手抓平移中（点选对象请关闭）' : '开启手抓平移 / 双指缩放'}
+              title={hand ? '手抓平移中（点选对象请关闭）' : '开启手抓平移（双指缩放随时可用，不必开启）'}
               className={
                 'flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground transition-colors ' +
                 (hand ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'hover:bg-accent')

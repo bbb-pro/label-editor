@@ -1469,6 +1469,45 @@ export class CanvasController {
     }
   }
 
+  /**
+   * 中断 fabric 正在进行的拖拽/缩放/旋转，并把对象还原到**本次手势开始前**的几何。
+   *
+   * 用途：双指缩放的第二根手指落下时，第一根手指往往已经让 fabric 进入了拖拽状态
+   * （fabric 收的是 touchstart，pointer 层面拦不住）。用户此刻的意图是缩放画布，
+   * 不该顺带把对象拖走，更不该把这次「误拖」记进撤销栈。
+   *
+   * 所以：还原几何 → 丢弃 mouse:down 时暂存的快照 → 补发一次 object:modified
+   * 让标尺高亮带 / 属性面板 / 纸外半透明重算。补发时 `_pendingHistory` 已清空，
+   * 引擎的 modified handler 不会 commit，因此撤销栈里不会多出一条空记录。
+   */
+  abortActiveTransform(): void {
+    const inner = this.canvas as unknown as {
+      _currentTransform?: {
+        target?: fabric.Object
+        original?: { left?: number; top?: number; scaleX?: number; scaleY?: number; angle?: number }
+      } | null
+      _groupSelector?: unknown
+    }
+    const t = inner._currentTransform
+    const target = t?.target
+    if (t && target && t.original) {
+      target.set({
+        left: t.original.left,
+        top: t.original.top,
+        scaleX: t.original.scaleX,
+        scaleY: t.original.scaleY,
+        angle: t.original.angle,
+      })
+      target.setCoords()
+    }
+    inner._currentTransform = null
+    inner._groupSelector = null
+    this._pendingHistory = null
+    this.canvas.requestRenderAll()
+    // 补发 modified：刷新标尺 / 属性面板 / 纸外半透明（上面已清 pending，不会写历史）
+    this.canvas.fire('object:modified', target ? { target } : {})
+  }
+
   getCanvasSizePx() {
     // 视图适配按"标签"大小计算（让标签铺满视口）；画布 DOM 是更大的工作区
     return { w: this.paperPxW, h: this.paperPxH }
