@@ -39,7 +39,6 @@ import {
   ShieldCheck,
   Lock,
   Unlock,
-  ChevronDown,
   Hash,
   Copy,
 } from 'lucide-react'
@@ -47,7 +46,7 @@ import type { PaperSize, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec } from '@/types/editor'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
-import { FONT_FAMILIES, FONT_SIZES_PT } from '@/lib/textStyles'
+import { FONT_FAMILIES } from '@/lib/textStyles'
 import MmField from '@/components/editor/MmField'
 import { cn } from '@/lib/utils'
 
@@ -233,18 +232,12 @@ function TextFormatSection({
               ))}
             </SelectContent>
           </Select>
-          {/* 字号(pt)：自由输入 + 预设（数字框自带上下微调箭头，省去独立步进按钮） */}
-          <div className="flex h-8 items-center gap-1">
-            <FontSizeField
-              key={keySeed}
-              value={fmt.fontSizePt}
-              onCommit={(v) => onChange({ fontSizePt: v })}
-            />
-            <FontPresetSelect
-              current={fmt.fontSizePt}
-              onPick={(v) => onChange({ fontSizePt: v })}
-            />
-          </div>
+          {/* 字号(pt)：只保留一个数字输入框（原生上下微调箭头已够用，不再另设预设框） */}
+          <FontSizeField
+            key={keySeed}
+            value={fmt.fontSizePt}
+            onCommit={(v) => onChange({ fontSizePt: v })}
+          />
           {/* 颜色 */}
           <label className="flex h-8 items-center gap-1.5 rounded-md border bg-background px-2">
             <input
@@ -892,8 +885,13 @@ function clampFontSize(v: number): number {
  * 1. 点数字框自带的上下微调箭头只触发 input 事件、不会失焦 → 永远不生效；
  *    输入后直接看画布（不失焦）同样不生效，表现为「输入数字调大小失效」。
  * 2. 每次提交后 `key` 变化会让 input 重新挂载 → 输入焦点/光标丢失。
- * 现改为「受控草稿值 + 实时提交」：打字或点箭头即时生效，
- * 失焦/回车时才把输入框内容规范化（clamp），外部值变化（切换对象/点预设）时同步。
+ * 现改为「可归属草稿 + 实时提交」：打字或点箭头即时生效。
+ * 草稿记成 `{ text, forValue }` —— text 是用户字面输入，forValue 是这次输入对应的引擎值。
+ * 仅当 `forValue === value`（即当前 props 值正是这次输入造成的）才用草稿，
+ * 否则说明值来自**外部**（归零按钮 / 撤销重做 / 切换对象）→ 直接回落到 props 值。
+ * 于是：连续输入如 "1." 或超范围的 "999" 不会被吃掉，而外部改值一定联动；
+ * 且**不依赖失焦时序**（点按钮时浏览器会先 blur 再 click，但不该把它当前提）。
+ * 刻意不用 useEffect 同步（本仓库 eslint 禁止 effect 内 setState）。
  */
 function FontSizeField({
   value,
@@ -902,43 +900,33 @@ function FontSizeField({
   value: number
   onCommit: (pt: number) => void
 }) {
-  const [draft, setDraft] = useState(() => String(value))
-  const focused = useRef(false)
-
-  // 外部值变化（切换对象/点预设）时靠父级 key={resetKey} 重建本组件来同步，
-  // 因此这里不再需要「聚焦时不同步」的 useEffect（原写法会在 effect 内 setState）。
+  const [draft, setDraft] = useState<{ text: string; forValue: number } | null>(null)
+  /** 草稿只在其归属值仍等于 props 值时生效，否则一律显示 props 值 → 外部改值自动联动 */
+  const shown = draft && draft.forValue === value ? draft.text : String(value)
 
   const commit = (raw: string, normalize: boolean) => {
     const n = parseFloat(raw)
     if (!Number.isFinite(n)) {
-      if (normalize) setDraft(String(value))
+      // 中间态（如清空输入框）保留字面值，失焦/回车时回落到引擎值
+      setDraft(normalize ? null : { text: raw, forValue: value })
       return
     }
     const v = clampFontSize(n)
     // 实时输入时保留用户输入的字面值（不被 clamp 打断），仅在失焦/回车时规范化
-    if (normalize) setDraft(String(v))
+    setDraft(normalize ? null : { text: raw, forValue: v })
     if (v !== value) onCommit(v)
   }
 
   return (
-    <div className="flex h-8 min-w-0 flex-1 items-center rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring/40">
+    <div className="flex h-8 min-w-0 items-center rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring/40">
       <input
         type="number"
         min={0.5}
         max={500}
         step={0.5}
-        value={draft}
-        onFocus={() => {
-          focused.current = true
-        }}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          commit(e.target.value, false)
-        }}
-        onBlur={(e) => {
-          focused.current = false
-          commit(e.target.value, true)
-        }}
+        value={shown}
+        onChange={(e) => commit(e.target.value, false)}
+        onBlur={(e) => commit(e.target.value, true)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
             commit((e.target as HTMLInputElement).value, true)
@@ -952,7 +940,13 @@ function FontSizeField({
   )
 }
 
-/** 字间距(pt)：与「字号」同口径，可负；输入即生效，失焦/回车规范化 */
+/**
+ * 字间距(pt)：与「字号」同口径，可负；输入即生效，失焦/回车规范化。
+ * 草稿记成 `{ text, forValue }`，仅当 `forValue === value` 时才使用草稿，
+ * 否则判定为**外部**改值（归零按钮 / 撤销重做 / 切换对象）→ 直接显示 props.value。
+ * （旧实现只在组件被 key 重建时才同步草稿，而点「归零」不会改变 key，
+ * 于是输入框一直显示旧值 —— 就是"按了归零，前面的框没变成 0"。）
+ */
 function LetterSpacingField({
   value,
   onCommit,
@@ -960,15 +954,18 @@ function LetterSpacingField({
   value: number
   onCommit: (pt: number) => void
 }) {
-  const [draft, setDraft] = useState(() => String(value ?? 0))
+  const [draft, setDraft] = useState<{ text: string; forValue: number } | null>(null)
+  /** 草稿只在其归属值仍等于 props 值时生效，否则一律显示 props 值 → 外部改值自动联动 */
+  const shown = draft && draft.forValue === value ? draft.text : String(value ?? 0)
   const commit = (raw: string, normalize: boolean) => {
     const n = parseFloat(raw)
     if (!Number.isFinite(n)) {
-      if (normalize) setDraft(String(value ?? 0))
+      // 中间态（如清空输入框）保留字面值，失焦/回车时回落到引擎值
+      setDraft(normalize ? null : { text: raw, forValue: value })
       return
     }
     const v = Math.round(Math.max(-20, Math.min(60, n)) * 100) / 100
-    if (normalize) setDraft(String(v))
+    setDraft(normalize ? null : { text: raw, forValue: v })
     if (v !== value) onCommit(v)
   }
   return (
@@ -982,11 +979,8 @@ function LetterSpacingField({
         min={-20}
         max={60}
         step={0.1}
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          commit(e.target.value, false)
-        }}
+        value={shown}
+        onChange={(e) => commit(e.target.value, false)}
         onBlur={(e) => commit(e.target.value, true)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -998,54 +992,6 @@ function LetterSpacingField({
       />
       <span className="shrink-0 text-[10px] text-muted-foreground">pt</span>
     </label>
-  )
-}
-
-/** 字号预设下拉（最常用 + 自由值） */
-function FontPresetSelect({
-  current,
-  onPick,
-}: {
-  current: number
-  onPick: (v: number) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const presets = FONT_SIZES_PT
-  return (
-    <div className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex h-8 items-center gap-0.5 rounded-md border px-1.5 text-xs text-muted-foreground hover:bg-accent"
-        title="字号预设"
-      >
-        pt
-        <ChevronDown className="h-3.5 w-3.5" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-50 mt-1 grid max-h-56 w-24 grid-cols-3 overflow-auto rounded-md border bg-background p-1 shadow-md">
-            {[...presets]
-              .sort((a, b) => a - b)
-              .map((s) => (
-                <button
-                  key={s}
-                  onClick={() => {
-                    onPick(s)
-                    setOpen(false)
-                  }}
-                  className={`rounded px-1 py-1 text-center text-[11px] tabular-nums hover:bg-accent ${
-                    Math.abs(s - current) < 0.01 ? 'bg-primary/10 text-primary' : ''
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-          </div>
-        </>
-      )}
-    </div>
   )
 }
 
