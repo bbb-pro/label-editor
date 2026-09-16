@@ -637,6 +637,9 @@ export default function App() {
       case 'text':
         ctrl.addText()
         break
+      case 'text-paragraph':
+        ctrl.addParagraphText()
+        break
       case 'rect':
         ctrl.addRect()
         break

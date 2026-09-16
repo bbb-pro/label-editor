@@ -296,6 +296,23 @@ function TextFormatSection({
             </Toggle>
           ))}
         </div>
+        {/* 字间距(pt)：与字号同口径，负数收紧、正数拉开；改字号时会按比例重算 */}
+        <div className="flex items-center gap-1">
+          <LetterSpacingField
+            key={`ls:${keySeed}`}
+            value={fmt.letterSpacingPt}
+            onCommit={(v) => onChange({ letterSpacingPt: v })}
+          />
+          <button
+            type="button"
+            onClick={() => onChange({ letterSpacingPt: 0 })}
+            disabled={!fmt.letterSpacingPt}
+            title="字间距归零"
+            className="h-8 shrink-0 rounded-md border px-2 text-[10px] text-muted-foreground hover:bg-accent disabled:opacity-40"
+          >
+            归零
+          </button>
+        </div>
         {/* 区域框（开启后文本像一块可视的"区域文本框"，可整体拖/缩放） */}
         <div className="rounded-md border bg-muted/20 p-2">
           <p className="mb-1 text-[10px] font-medium text-muted-foreground">区域框</p>
@@ -545,6 +562,15 @@ function SelectedObjectPanel({
             {active.kind === 'line'
               ? '拉大或缩小时线条粗细保持不变，仅此处可调。'
               : '拉大或缩小时线条粗细保持不变；填充会随整体一起缩放。'}
+          </p>
+        </Section>
+      )}
+
+      {isText && active.isParagraph && (
+        <Section title="段落文本">
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            拖左右两侧的控制点调整段落宽度，文字会自动换行并适应边界；高度默认贴合文字内容。
+            浅色区域框仅用于排版参考，不会被打印或导出。
           </p>
         </Section>
       )}
@@ -923,6 +949,55 @@ function FontSizeField({
       />
       <span className="pr-2 text-[11px] text-muted-foreground">pt</span>
     </div>
+  )
+}
+
+/** 字间距(pt)：与「字号」同口径，可负；输入即生效，失焦/回车规范化 */
+function LetterSpacingField({
+  value,
+  onCommit,
+}: {
+  value: number
+  onCommit: (pt: number) => void
+}) {
+  const [draft, setDraft] = useState(() => String(value ?? 0))
+  const commit = (raw: string, normalize: boolean) => {
+    const n = parseFloat(raw)
+    if (!Number.isFinite(n)) {
+      if (normalize) setDraft(String(value ?? 0))
+      return
+    }
+    const v = Math.round(Math.max(-20, Math.min(60, n)) * 100) / 100
+    if (normalize) setDraft(String(v))
+    if (v !== value) onCommit(v)
+  }
+  return (
+    <label
+      className="flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md border bg-background px-2 focus-within:ring-2 focus-within:ring-ring/40"
+      title="字间距：负数收紧、正数拉开；与字号同口径(pt)"
+    >
+      <span className="shrink-0 text-[10px] text-muted-foreground">字距</span>
+      <input
+        type="number"
+        min={-20}
+        max={60}
+        step={0.1}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value)
+          commit(e.target.value, false)
+        }}
+        onBlur={(e) => commit(e.target.value, true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            commit((e.target as HTMLInputElement).value, true)
+            ;(e.target as HTMLInputElement).blur()
+          }
+        }}
+        className="h-full w-full min-w-0 bg-transparent text-center text-xs font-medium tabular-nums focus:outline-none"
+      />
+      <span className="shrink-0 text-[10px] text-muted-foreground">pt</span>
+    </label>
   )
 }
 

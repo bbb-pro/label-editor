@@ -245,7 +245,30 @@ function rotPts(cx: number, cy: number, pts: Array<[number, number]>, deg: numbe
 
 /* ── 各类对象绘制 ─────────────────────────────────── */
 
-/** 文本对象 → 矢量逐行重建 */
+/**
+ * 复用 fabric 自己算好的断行结果（含字间距、中文逐字断行、宽度约束），
+ * 让 PDF 的换行与画布逐行一致。仅当对象当前文本与待导出内容完全一致时才采用，
+ * 否则返回 null，退回 jsPDF 自行断行（保底，不会画错内容）。
+ */
+function fabricWrappedLines(it: fabric.Textbox, content: string): string[] | null {
+  const tl = (it as unknown as { textLines?: unknown }).textLines
+  if (!Array.isArray(tl) || tl.length === 0) return null
+  const lines = tl.filter((l): l is string => typeof l === 'string')
+  if (lines.length !== tl.length) return null
+  const norm = (s: string) => s.replace(/\r\n?/g, '\n')
+  return norm(lines.join('\n')) === norm(content) ? lines : null
+}
+
+/** 用 jsPDF 自测文本宽度(mm)：getStringUnitWidth 返回 em 数 */
+function measureTextMm(doc: jsPDF, s: string, fontSizePt: number): number {
+  return doc.getStringUnitWidth(s) * fontSizePt * MM_PER_PT
+}
+
+/**
+ * 文本对象 → 矢量逐行重建。
+ * 断行优先复用 fabric 的 textLines，逐行宽度也用它（含字间距），
+ * 这样居中/右对齐的锚点与画布一致——jsPDF 自身的 align 不计 charSpace。
+ */
 function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   if (!content) return
   const it = o as unknown as fabric.Textbox
@@ -254,6 +277,7 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   const fontSizePx = (it.fontSize ?? 12) * (it.scaleY ?? 1)
   const fontSizePt = pxToPt(fontSizePx)
   const wrapWmm = pxToMm((it.width ?? 1) * (it.scaleX ?? 1))
+  const charSpacing = it.charSpacing ?? 0
 
   const isBold =
     (it.fontWeight ?? '') === 'bold' || (typeof it.fontWeight === 'number' && it.fontWeight >= 600)
@@ -266,6 +290,10 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   const useBuiltinBold = pdfFont !== FONT_ALIAS && isBold
   doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
   doc.setFontSize(fontSizePt)
+  // 字间距：fabric 的 charSpacing 与 PDF 的 Tc 同为「千分之一 em」，
+  // 而 jsPDF 的 charSpace 按用户单位写入 Tc（mm 单位下会被乘 scaleFactor），
+  // 故这里做一次 mm 换算即可等价（已实测）。
+  doc.setCharSpace(charSpacing * MM_PER_PT)
 
   const rgb = parseColor((it.fill as string) ?? '#000000') ?? [0, 0, 0]
   doc.setTextColor(rgb[0], rgb[1], rgb[2])
@@ -276,14 +304,27 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   const lineLead = lineH * lineHeightF
   const ascent = lineH * 0.86
 
+  // 断行：优先复用 fabric 的换行结果（与画布逐行一致），并取它算好的行宽
+  const fabricLines = fabricWrappedLines(it, content)
   const lines: string[] = []
-  for (const para of content.split('\n')) {
-    if (!para) {
-      lines.push('')
-      continue
+  /** 每行宽度(mm，含字间距)；NaN = 待用 jsPDF 兜底测量 */
+  const lineWmm: number[] = []
+  const pushLine = (s: string, w: number) => {
+    lines.push(s)
+    lineWmm.push(w)
+  }
+  if (fabricLines) {
+    for (let i = 0; i < fabricLines.length; i++) {
+      const raw = typeof it.getLineWidth === 'function' ? it.getLineWidth(i) : NaN
+      pushLine(fabricLines[i], Number.isFinite(raw) ? pxToMm(raw * (it.scaleX ?? 1)) : NaN)
     }
-    const wrapped = doc.splitTextToSize(para, Math.max(wrapWmm, 0.5)) as string[]
-    for (const l of wrapped) lines.push(l)
+  } else {
+    for (const para of content.split('\n')) {
+      const wrapped = para
+        ? (doc.splitTextToSize(para, Math.max(wrapWmm, 0.5)) as string[])
+        : ['']
+      for (const l of wrapped) pushLine(l, NaN)
+    }
   }
   if (lines.length === 0) lines.push('')
 
@@ -297,13 +338,15 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
     if (!str) continue
     // baseline 第 li 行
     const baseY = topY + ascent + li * lineLead
-    // x 依对齐：以盒左/中/右
+    // x 依对齐：以盒左/中/右定位。⚠️ jsPDF 的 align 用它自己的宽度（不计 charSpace），
+    // 字间距下会偏，故这里用行宽自己算锚点、以左对齐绘制。
+    let w = lineWmm[li]
+    if (!Number.isFinite(w)) w = measureTextMm(doc, str, fontSizePt)
     let x = box.left
-    const aOpt = align === 'center' ? 1 : align === 'right' ? 2 : 0
-    if (align === 'center') x = box.left + wrapWmm / 2
-    else if (align === 'right') x = box.left + wrapWmm
+    if (align === 'center') x = box.left + Math.max(wrapWmm - w, 0) / 2
+    else if (align === 'right') x = box.left + Math.max(wrapWmm - w, 0)
 
-    const textOpts: Record<string, unknown> = { align: aOpt as 0 | 1 | 2 }
+    const textOpts: Record<string, unknown> = {}
     if (rotDeg % 360 !== 0) textOpts.angle = rotDeg
     // jsPDF 画字一次
     doc.text(str, n(x), n(baseY), textOpts)
@@ -314,6 +357,8 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
       doc.text(str, n(x + off), n(baseY), textOpts)
     }
   }
+  // 复位字间距，避免影响后续文本（如条码人读文字）
+  doc.setCharSpace(0)
 }
 
 /** 矩形（含圆角，支持旋转：旋转时用闭合多边形近似圆角边） */

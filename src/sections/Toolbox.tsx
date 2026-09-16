@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import {
   Type,
+  Pilcrow,
   Barcode,
   Shapes,
   Square,
@@ -37,6 +38,12 @@ const shapeItems: { key: ToolType; label: string; Icon: typeof Square }[] = [
 /** 固定按钮：直接触发 add */
 const fixedItems: { key: ToolType; label: string; Icon: typeof Type; hint?: string }[] = [
   { key: 'text', label: '文本', Icon: Type },
+  {
+    key: 'text-paragraph',
+    label: '段落',
+    Icon: Pilcrow,
+    hint: '插入段落文本（多行自动换行，拖左右控制点调宽度，文字自动适应边界）',
+  },
   {
     key: 'barcode-code128',
     label: '条码/二维码',

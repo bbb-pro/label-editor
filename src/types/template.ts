@@ -35,6 +35,7 @@ export type PaperOrder = 'set' | 'paper'
 /** 工具类型（左侧工具条触发指令，与元素 kind 解耦） */
 export type ToolType =
   | 'text'
+  | 'text-paragraph'
   | 'barcode-code128'
   | 'barcode-qrcode'
   | 'rect'

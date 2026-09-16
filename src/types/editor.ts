@@ -10,6 +10,12 @@ export interface TextStyle {
   italic: boolean
   color: string
   textAlign: 'left' | 'center' | 'right'
+  /**
+   * 字间距，单位 pt（与字号同口径，负数收紧、正数拉开）。
+   * 内部会换算成 fabric 的 charSpacing（千分之一 em），
+   * 因此改字号时会按新字号重算，视觉字距保持恒定。
+   */
+  letterSpacingPt?: number
 }
 
 /** 文本元素在属性面板中展示的格式快照（仅 kind==='text' 时存在） */
@@ -20,6 +26,8 @@ export interface TextFormatSnapshot {
   italic: boolean
   color: string
   textAlign: string
+  /** 字间距(pt)，0=默认 */
+  letterSpacingPt: number
 }
 
 /** 序列化配置：批量打印时 {{seq}} 从 start 开始，每张 +step，补零到 minDigits 位 */
@@ -72,6 +80,8 @@ export interface ActiveObject {
   textFormat?: TextFormatSnapshot
   /** 仅文本对象：区域框（开启后显示边框+底色，类似"区域文本框"） */
   textRegion?: { border: boolean; bg: boolean }
+  /** 仅文本对象：段落文本（定宽自动换行的多行区域框） */
+  isParagraph?: boolean
 }
 
 export type { DataRow, ElementKind }

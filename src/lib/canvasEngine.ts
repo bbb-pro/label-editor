@@ -49,6 +49,17 @@ interface CustomFields {
    */
   _barcodeTextOffsetMm?: number
   originalText?: string
+  /**
+   * 段落文本（kind='text' 的子类型）：一个定宽、自动换行的多行区域文本框。
+   * 拖左右控制点改宽度 → 文字按新边界重排；高度默认贴合文字内容。
+   * 外观与普通文本完全一致（无默认底色/边框），需要时可在属性面板开「区域框」。
+   */
+  _textParagraph?: boolean
+  /**
+   * 字间距的「pt 口径」存档值。fabric 实际用 charSpacing(1/1000 em)，随字号变化；
+   * 这里额外记住用户输入的 pt 值，改字号时按新字号重算 charSpacing，视觉字距才不变。
+   */
+  _letterSpacingPt?: number
   /** 形状子类型（kind === 'shape' 时生效） */
   _shapeType?: ShapeType
   /** 内容对象：纯文本前缀（显示在内容前） */
@@ -128,6 +139,30 @@ const SHAPE_BASE: Record<ShapeType, string> = {
   triangle: '三角形',
   diamond: '菱形',
   star: '五角星',
+}
+
+/** 段落文本默认宽度（mm）：比普通文本框宽，开箱即可承载多行内容 */
+const PARAGRAPH_WIDTH_MM = 60
+/** 段落文本占位文案（三行，直观展示自动换行效果） */
+const PARAGRAPH_PLACEHOLDER = '段落文本示例\n拖左右控制点调整宽度，文字会自动换行'
+/**
+ * 文本「区域框」的默认配色（属性面板开启边框/底色时使用）。
+ * 它只是画布上的排版参考，导出/打印前会被剥离（见 toPaperDataUrl），
+ * 用户若手动改成别的颜色即视为有意输出，会原样保留。
+ */
+const REGION_DEFAULT = { stroke: '#444444', backgroundColor: '#f1f5f9' } as const
+
+/** 字间距（pt）→ fabric charSpacing（千分之一 em）；字号为 0 时退回 0 */
+function ptToCharSpacing(letterSpacingPt: number, fontSizePx: number): number {
+  const fsPt = pxToPt(fontSizePx)
+  if (!(fsPt > 0)) return 0
+  return Math.round((letterSpacingPt / fsPt) * 1000 * 1000) / 1000
+}
+
+/** fabric charSpacing → 字间距（pt），用于属性面板回显 */
+function charSpacingToPt(charSpacing: number | undefined, fontSizePx: number): number {
+  if (!charSpacing) return 0
+  return pxToPt((fontSizePx * charSpacing) / 1000)
 }
 
 /** 形状的友好默认名：椭圆1 / 五角星1 …（独立计数） */
@@ -567,9 +602,14 @@ export class CanvasController {
       return
     }
 
+    // 段落文本：高度默认贴合文字 —— 上下拖可留白但不能压得比内容矮；
+    // 拖四角（宽高同时变）时只认宽度，高度交给文字重新排版后自动撑开。
+    const isParagraph = !!cf(tb)._textParagraph
     const updates: Record<string, number> = { scaleX: 1, scaleY: 1 }
     if (changedX) updates.width = Math.max(minW, newW)
-    if (changedY) updates.height = Math.max(10, newH)
+    if (changedY && !(isParagraph && changedX)) {
+      updates.height = Math.max(isParagraph ? tb.height ?? 0 : 10, newH)
+    }
     tb.set(updates)
     tb.setCoords()
     this.events.onDirty?.()
@@ -915,13 +955,18 @@ export class CanvasController {
     if (kind === 'text') {
       const it = obj as fabric.IText
       text = c.originalText ?? it.text ?? ''
+      const itAny = it as fabric.IText
+      const fsPx = itAny.fontSize ?? 12
       textFormat = {
-        fontFamily: (it as fabric.IText).fontFamily ?? 'Arial',
-        fontSizePt: Math.round(pxToPt((it as fabric.IText).fontSize ?? 12) * 10) / 10,
-        bold: (it as fabric.IText).fontWeight === 'bold',
-        italic: (it as fabric.IText).fontStyle === 'italic',
-        color: ((it as fabric.IText).fill as string) ?? '#000000',
-        textAlign: ((it as fabric.IText).textAlign ?? 'left') as string,
+        fontFamily: itAny.fontFamily ?? 'Arial',
+        fontSizePt: Math.round(pxToPt(fsPx) * 10) / 10,
+        bold: itAny.fontWeight === 'bold',
+        italic: itAny.fontStyle === 'italic',
+        color: (itAny.fill as string) ?? '#000000',
+        textAlign: (itAny.textAlign ?? 'left') as string,
+        // 优先回显用户输入的 pt 存档值（避免换算噪声），否则由 charSpacing 反推
+        letterSpacingPt:
+          c._letterSpacingPt ?? Math.round(charSpacingToPt(itAny.charSpacing, fsPx) * 10) / 10,
       }
       const hasBorder = !!(it as fabric.Object).stroke && (it as fabric.Object).stroke !== 'transparent'
       const hasBg = !!(it as fabric.Object).backgroundColor && (it as fabric.Object).backgroundColor !== 'transparent'
@@ -987,6 +1032,7 @@ export class CanvasController {
       shapeType,
       textFormat,
       textRegion,
+      isParagraph: kind === 'text' ? !!c._textParagraph : undefined,
     })
   }
 
@@ -999,11 +1045,20 @@ export class CanvasController {
     const it = obj as fabric.IText
     const set: Record<string, unknown> = {}
     if (patch.fontFamily) set.fontFamily = patch.fontFamily
-    if (patch.fontSizePt != null) set.fontSize = ptToPx(patch.fontSizePt)
+    if (patch.fontSizePt != null) {
+      set.fontSize = ptToPx(patch.fontSizePt)
+      // 字间距按 pt 存档：字号变了要换算成新的 charSpacing，视觉字距才不被字号带跑
+      if (c._letterSpacingPt) set.charSpacing = ptToCharSpacing(c._letterSpacingPt, set.fontSize as number)
+    }
     if (patch.bold != null) set.fontWeight = patch.bold ? 'bold' : 'normal'
     if (patch.italic != null) set.fontStyle = patch.italic ? 'italic' : 'normal'
     if (patch.color) set.fill = patch.color
     if (patch.textAlign) set.textAlign = patch.textAlign
+    if (patch.letterSpacingPt != null) {
+      const fsPx = (set.fontSize as number | undefined) ?? it.fontSize ?? 12
+      set.charSpacing = ptToCharSpacing(patch.letterSpacingPt, fsPx)
+      c._letterSpacingPt = patch.letterSpacingPt
+    }
     if (Object.keys(set).length) {
       it.set(set)
       it.initDimensions()
@@ -1025,10 +1080,10 @@ export class CanvasController {
     if (c.kind !== 'text') return
     const it = obj as fabric.IText
     const set: Record<string, unknown> = {}
-    set.stroke = region.border ? '#444444' : 'transparent'
+    set.stroke = region.border ? REGION_DEFAULT.stroke : 'transparent'
     set.strokeWidth = region.border ? 1 : 0
     set.strokeUniform = true
-    set.backgroundColor = region.bg ? '#f1f5f9' : 'transparent'
+    set.backgroundColor = region.bg ? REGION_DEFAULT.backgroundColor : 'transparent'
     it.set(set)
     it.setCoords()
     this.canvas.requestRenderAll()
@@ -1530,6 +1585,52 @@ export class CanvasController {
   }
 
   // ── 对象：新增 ──────────────────────────────────────────
+  /**
+   * 段落文本：定宽、自动换行的多行区域文本框。
+   * 与普通文本同属 kind='text'（导出 / 打印 / 数据绑定完全复用同一条链路），
+   * 差异只在预置形态：更宽的默认宽度 + 多行占位文案。
+   * 外观与普通文本一致（无底色/边框），需要可见边界时在属性面板开「区域框」。
+   * 拖左右两侧控制点改宽度 → 文字按新边界重排；高度默认贴合文字内容。
+   */
+  addParagraphText(initial = PARAGRAPH_PLACEHOLDER) {
+    // 窄标签上按纸宽收一档（留 10% 边距），避免段落一插入就超出纸面
+    const boxW = Math.min(mmToPx(PARAGRAPH_WIDTH_MM), mmToPx(this.activePaper.widthMm) * 0.9)
+    const cx = this.paperCenter().x
+    const cy = this.paperCenter().y
+    const obj = new fabric.Textbox(initial, {
+      left: cx - boxW / 2,
+      top: cy - mmToPx(9),
+      width: boxW,
+      fontSize: 20,
+      fontFamily: 'Arial',
+      fill: '#000000',
+      originX: 'left',
+      originY: 'top',
+      splitByGrapheme: true,
+      lineHeight: 1.35,
+      // 与普通文本一致：默认无底色、无边框（需要可见边界时用属性面板的「区域框」）
+    })
+    const c = cf(obj)
+    c._textParagraph = true
+    // 先占位命名，finalizeObject 只在 _name 为空时才补默认名
+    c._name = this.nextParagraphName(obj)
+    this.finalizeObject(obj, 'text', initial)
+  }
+
+  /**
+   * 段落文本命名：段落1 / 段落2 …
+   * 载入模板后 nameCounters 不会回退，可能与模板里已有的「段落N」错位，
+   * 因此生成后再查一次重，避免静默撞名（撞名会干扰数据打印的按列名绑定）。
+   */
+  private nextParagraphName(obj: fabric.Object): string {
+    const base = '段落'
+    let idx = (nameCounters.get(base) ?? 0) + 1
+    let name = `${base}${idx}`
+    while (!this.isNameAvailable(name, obj)) name = `${base}${++idx}`
+    nameCounters.set(base, idx)
+    return name
+  }
+
   addText(initial = '文本') {
     const boxW = mmToPx(40)
     const cx = this.paperCenter().x
@@ -2399,7 +2500,11 @@ export class CanvasController {
         // 矢量条码组：模块矩形不写入 JSON（几百个对象太臃肿），载入时按元数据重建
         if (obj.type === 'group') delete (props as { objects?: unknown }).objects
       }
-      if (c.kind === 'text') props.originalText = c.originalText
+      if (c.kind === 'text') {
+        props.originalText = c.originalText
+        if (c._textParagraph) props._textParagraph = true
+        if (c._letterSpacingPt) props._letterSpacingPt = c._letterSpacingPt
+      }
       if (c.kind === 'shape') props._shapeType = c._shapeType ?? 'ellipse'
       if (c.kind === 'svg') {
         props._svgInner = c._svgInner
@@ -2581,6 +2686,38 @@ export class CanvasController {
         hiddenCards.push(r)
       }
     }
+    // 文本的「区域框」（边框 + 底色）只服务于画布排版，导出前剥离，否则 PNG 上会留下灰块。
+    // 矢量 PDF / 打印走的 drawTextObject 本就不绘制文本的背景与描边，
+    // 这里剥离后三条输出链路行为才一致。
+    const strippedRegion: Array<{
+      o: fabric.Object
+      /** null = 该项未被剥离，恢复时跳过 */
+      stroke: string | null
+      strokeWidth: number
+      bg: string | null
+    }> = []
+    for (const o of this.flattenTopLevel()) {
+      const c = cf(o)
+      if (c.kind !== 'text') continue
+      const it = o as fabric.Object
+      const rec = {
+        o: it,
+        stroke: null as string | null,
+        strokeWidth: 0,
+        bg: null as string | null,
+      }
+      // 只剥离「仍是默认区域框配色」的项；用户改过色（如真的要做有底色的标签块）说明是有意输出，保留
+      if ((it.stroke as string) === REGION_DEFAULT.stroke) {
+        rec.stroke = (it.stroke as string | null) ?? null
+        rec.strokeWidth = it.strokeWidth ?? 0
+        it.set({ stroke: 'transparent', strokeWidth: 0 })
+      }
+      if ((it.backgroundColor as string) === REGION_DEFAULT.backgroundColor) {
+        rec.bg = (it.backgroundColor as string) ?? ''
+        it.set({ backgroundColor: '' })
+      }
+      if (rec.stroke !== null || rec.bg !== null) strippedRegion.push(rec)
+    }
     // ⚠️ 工作区底色是灰的（#e2e8f0）。隐藏纸卡后必须把 backgroundColor 也临时置白，
     // 否则导出的 PNG 会是灰底（而非白纸）。
     const prevBg = this.canvas.backgroundColor
@@ -2596,6 +2733,10 @@ export class CanvasController {
       url = raw.toDataURL('image/png')
     } finally {
       this.canvas.backgroundColor = prevBg
+      for (const s of strippedRegion) {
+        if (s.stroke !== null) s.o.set({ stroke: s.stroke ?? undefined, strokeWidth: s.strokeWidth })
+        if (s.bg !== null) s.o.set({ backgroundColor: s.bg ?? '' })
+      }
       for (const r of hiddenCards) r.set('visible', true)
       this.canvas.enableRetinaScaling = prevRetina
       // 恢复视口与尺寸
@@ -2629,6 +2770,10 @@ export class CanvasController {
       c.originalText = s.originalText
     } else if (c.kind === 'text' && c.originalText === undefined) {
       c.originalText = (o as fabric.IText).text ?? ''
+    }
+    if (c.kind === 'text') {
+      c._textParagraph = !!s._textParagraph
+      if (typeof s._letterSpacingPt === 'number') c._letterSpacingPt = s._letterSpacingPt
     }
     if (isContentKind(c.kind)) {
       if (typeof s._prefix === 'string') c._prefix = s._prefix
