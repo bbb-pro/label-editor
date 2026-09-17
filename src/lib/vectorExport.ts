@@ -384,14 +384,17 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
 
     const textOpts: Record<string, unknown> = {}
     if (rotDeg % 360 !== 0) textOpts.angle = rotDeg
-    // jsPDF 画字一次
-    doc.text(str, n(x), n(baseY), textOpts)
-    // 子集字体（中文）无真实字重，用极小的右偏重描一次近似加粗；
-    // 内置拉丁字体已在 setFont 时选 bold，无需再描（否则会糊边）。
+    // 粗体：中文走内嵌子集，没有真实 bold 字重。
+    // ⚠️ 绝不能用「同一行画两遍、第二遍右偏一点」的土办法 —— PDF 里那就是两串字形叠在
+    //    一起（实测「蓝莓果汁」被画 2 次、两次 x 相差 0.89mm，肉眼看到的就是「文字重叠」）。
+    //    改用 PDF 原生的「填充 + 描边」渲染模式一次成稿：字形沿轮廓均匀外扩，是真正的加粗，
+    //    只有一份字形数据。描边宽度取 0.05em（≈ 每边加粗 2.5% 字号）。
     if (isBold && !useBuiltinBold) {
-      const off = MM_PER_PT * fontSizePt * 0.045
-      doc.text(str, n(x + off), n(baseY), textOpts)
+      doc.setDrawColor(rgb[0], rgb[1], rgb[2])
+      doc.setLineWidth(fontSizePt * MM_PER_PT * 0.05)
+      textOpts.renderingMode = 'fillThenStroke'
     }
+    doc.text(str, n(x), n(baseY), textOpts)
   }
   // 复位字间距，避免影响后续文本（如条码人读文字）
   doc.setCharSpace(0)
