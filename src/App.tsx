@@ -1544,9 +1544,15 @@ export default function App() {
               type="button"
               title="在当前标签下方新建一张"
               onClick={() => {
+                // 新纸会立刻成为活动纸
                 const id = ctrlRef.current?.addPaper()
-                if (id) focusPaper(id)
-                fitToView()
+                if (!id) return
+                // 视图回到「100% 实际大小 + 新纸居中」：
+                // 这里**不能**用 fitToView()，它适配的是「所有标签的整体范围」，
+                // 标签一多缩放就被压到 30% 上下，新标签缩成一小块 → 看着像"画布跑得老远"。
+                // zoomTo100() 以当前活动纸（= 刚建的新纸）为中心按 1:1 显示，
+                // 并把自动居中交回给布局（后续 reflow 不会把视图推偏）。
+                requestAnimationFrame(() => zoomTo100())
               }}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent"
             >
