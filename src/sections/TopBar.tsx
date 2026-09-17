@@ -10,6 +10,7 @@ import {
   FileDown,
   Undo2,
   Redo2,
+  LayoutTemplate,
 } from 'lucide-react'
 
 interface TopBarProps {
@@ -20,6 +21,8 @@ interface TopBarProps {
   onNew: () => void
   onImportJson: (file: File) => void
   onExportJson: () => void
+  /** 打开模板库（公开行业模板，点选即新建） */
+  onOpenLibrary: () => void
   onUndo: () => void
   onRedo: () => void
   canUndo: boolean
@@ -38,6 +41,7 @@ export default function TopBar(props: TopBarProps) {
     onNew,
     onImportJson,
     onExportJson,
+    onOpenLibrary,
     onUndo,
     onRedo,
     canUndo,
@@ -109,6 +113,15 @@ export default function TopBar(props: TopBarProps) {
       <Button variant="ghost" size="sm" onClick={onExportJson} title="导出为 JSON 模板">
         <Download className="mr-1 h-4 w-4" />
         <span className="hidden lg:inline">导出模板</span>
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={onOpenLibrary}
+        title="模板库：食品 / 电商 / 仓储 / 医药 / 资产 / 服装吊牌等现成版式"
+      >
+        <LayoutTemplate className="mr-1 h-4 w-4" />
+        <span className="hidden lg:inline">模板库</span>
       </Button>
 
       <div className="flex-1" />

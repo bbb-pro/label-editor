@@ -8,6 +8,7 @@ import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/ty
 import { resolveContent } from '@/lib/content'
 import type { ActiveObject, TextFormatSnapshot, TextStyle } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
+import type { TemplateSpec, TplBarcodeNode } from '@/lib/templateLibrary'
 
 export type ActiveObjectSnapshot = ActiveObject
 
@@ -115,10 +116,49 @@ const GROW_TRIGGER_PX = 120
 const GROW_STEP_MM = 100
 /** 多标签：相邻两张纸之间的间距(mm) */
 const PAPER_GAP_MM = 20
+/** 工作区底色（标签纸之外的部分） */
+const WORKSPACE_BG = '#e2e8f0'
+/** 模板库落盘时文本统一使用的字体：与 addText 保持一致，
+ *  纯拉丁内容在 PDF 里会被映射成内置字体（矢量、免内嵌），中文走内嵌子集。 */
+const TEMPLATE_FONT = 'Arial'
 
 /** 取自定义字段读写器（类型断言，绕开 fabric 泛型 set） */
 function cf(o: fabric.Object): fabric.Object & CustomFields {
   return o as fabric.Object & CustomFields
+}
+
+/**
+ * 用 fabric 的真实字体度量量一段文本的「单行宽度」(px)。
+ * 模板库用它判断原设计稿给的框宽是否会让文字折行 —— 折行会破坏版式，
+ * 所以宁可把框放宽一点。用 fabric.Text 而不是 Textbox：前者构造时就会
+ * 算出自然宽度（= 不折行所需的最小宽度），后者按给定宽度折行。
+ */
+function measureSingleLinePx(text: string, fontSizePx: number, bold: boolean): number {
+  const probe = new fabric.Text(text, {
+    fontSize: fontSizePx,
+    fontFamily: TEMPLATE_FONT,
+    fontWeight: bold ? 'bold' : 'normal',
+  })
+  return probe.width ?? 0
+}
+
+/**
+ * 一张文本框在不越出纸张的前提下「最大可放宽到多宽」（设计框宽 left/boxW 为基准）。
+ * 放宽时对齐锚点必须保持：左对齐只向右长、右对齐只向左长、居中两侧对称长。
+ */
+function availableBoxWidth(
+  align: string,
+  left: number,
+  boxW: number,
+  paperLeft: number,
+  paperRight: number,
+): number {
+  if (align === 'right') return left + boxW - paperLeft
+  if (align === 'center') {
+    const c = left + boxW / 2
+    return 2 * Math.min(c - paperLeft, paperRight - c)
+  }
+  return paperRight - left
 }
 
 /** 对象的「工作区绝对」包围盒（逻辑坐标，不含视口变换）。
@@ -416,7 +456,7 @@ export class CanvasController {
         this._pendingHistory = null
         return
       }
-      this._pendingHistory = JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>
+      this._pendingHistory = this.snapshot()
     })
     this.canvas.on('object:modified', () => {
       this.clearGuides()
@@ -2619,7 +2659,19 @@ export class CanvasController {
     return true
   }
 
-  private finalizeObject(obj: fabric.Object, kind: ElementKind, text: string | null) {
+  /**
+   * 收尾一个新对象：补自定义字段 + 序列化补丁 + 加进画布 + 选中。
+   * @param activate 是否把新对象设为当前选中并广播（默认 true）。
+   *   批量导入（模板库/成组元素）时传 false —— 否则每加一个对象都会
+   *   重新设一次选中并 emitActive，既触发无谓的 React 重渲染，也会让
+   *   属性面板在导入过程中反复闪现中间对象。
+   */
+  private finalizeObject(
+    obj: fabric.Object,
+    kind: ElementKind,
+    text: string | null,
+    activate = true,
+  ) {
     const c = cf(obj)
     c.id = newId()
     c.kind = kind
@@ -2630,6 +2682,7 @@ export class CanvasController {
     this.patchSerialize(obj)
     this.applyLockState(obj)
     this.canvas.add(obj)
+    if (!activate) return
     this.canvas.setActiveObject(obj)
     this.canvas.requestRenderAll()
     this.emitActive(obj)
@@ -2794,6 +2847,8 @@ export class CanvasController {
     data.objects = objs.filter((o) => !o.excludeFromExport)
     // 多标签：纸张布局（含各自尺寸与位置）随模板保存
     data._papers = this.papers.map((p) => ({ ...p }))
+    // 当前选中的是第几张（撤销/重做要连「正在编辑哪张纸」一起回滚）
+    data._activePaperId = this.activePaperIdValue
     return data
   }
 
@@ -3008,7 +3063,10 @@ export class CanvasController {
         }
         if (restored.length > 0) {
           this.papers = restored
-          this.activePaperIdValue = restored[0].id
+          // 活动纸：旧模板/旧快照没有这个字段 → 退回第一张
+          const act = (json as { _activePaperId?: unknown })._activePaperId
+          this.activePaperIdValue =
+            typeof act === 'string' && restored.some((p) => p.id === act) ? act : restored[0].id
           this.resizeWorkspace()
         }
       }
@@ -3042,6 +3100,160 @@ export class CanvasController {
     this.canvas.requestRenderAll()
     this.events.onDirty()
     this.events.onActiveChange(null)
+  }
+
+  // ── 模板库：把公开模板落成画布内容 ──────────────────────
+  /**
+   * 载入「模板库」模板：重置为「单张纸 + 模板自带尺寸」，再按规格建出元素。
+   *
+   * 不复用 addText / addBarcode / addRect —— 那几个方法都按「纸张中心」摆放，
+   * 而模板需要精确的绝对坐标。这里统一按「纸张左上角 + 规格偏移」定位；
+   * 建好后与手工绘制的对象完全等价（可选中 / 编辑 / 编组 / 撤销 / 导出）。
+   */
+  loadTemplate(spec: TemplateSpec): void {
+    // 撤销栈先记下"载入前"，Ctrl+Z 可退回原画布
+    this.pushHistory()
+    this.canvas.discardActiveObject()
+    this._suppressDirty = true
+    this.canvas.clear()
+    this.canvas.backgroundColor = WORKSPACE_BG
+    // 重置为单张纸：模板自带尺寸，清掉上一个文件残留的多标签布局
+    const margin = mmToPx(WORKSPACE_MARGIN_MM)
+    const paper = this.makePaper(
+      spec.name || '标签 1',
+      { widthMm: spec.widthMm, heightMm: spec.heightMm },
+      margin,
+      margin,
+    )
+    this.papers = [paper]
+    this.activePaperIdValue = paper.id
+    this.relayoutPapers()
+    this.resizeWorkspace()
+    this.recreatePaperRects()
+
+    const ox = paper.left
+    const oy = paper.top
+    const paperRight = ox + mmToPx(spec.widthMm)
+
+    for (const n of spec.nodes) {
+      if (n.kind === 'text') {
+        // ── 单行版式还原 ──────────────────────────────────────────────
+        // 源模板的每个 text 元素都是单行标签（声明高度 ≈ 1 行），但框宽贴得很紧。
+        // 我们的字体度量比原站略宽，且 fabric 折行是按「逐字符取整后的宽度」累加比较的，
+        // 于是「框宽刚好等于自然宽度」也会折行 —— 实测 `IT-2024-0001`（自然 112.4px /
+        // 框 113.4px）被折成 `IT-2024-000` + `1`，文本框高度翻倍后越出纸张下边界
+        // （整块变半透明、且不进导出）。
+        // 对策：① 量出真实单行宽度，留 2% + 2px 余量放宽框（对齐锚点不变）；
+        //      ② 放宽不得越出纸张；纸面实在放不下时按比例微缩字号（幅度很小），
+        //         而不是折行，也不是把文字推到纸外（纸外对象不导出）。
+        const left = ox + mmToPx(n.xMm)
+        const boxW = mmToPx(n.wMm)
+        const topBase = oy + mmToPx(n.yMm)
+        let fsPx = ptToPx(n.fontSizePt)
+        let boxFinal = boxW
+        let topAdj = 0
+        const natural = measureSingleLinePx(n.text, fsPx, n.bold)
+        const wanted = natural * 1.02 + 2
+        if (wanted > boxW) {
+          const avail = availableBoxWidth(
+            n.align,
+            left,
+            boxW,
+            ox,
+            paperRight,
+          )
+          if (wanted <= avail) {
+            boxFinal = wanted
+          } else {
+            const k = Math.max(0.6, avail / wanted)
+            fsPx *= k
+            boxFinal = Math.max(boxW, wanted * k)
+            // 原设计稿按原字号在块内垂直居中，缩字号后补回一半行高差
+            topAdj = ((1 - k) * ptToPx(n.fontSizePt) * 1.16) / 2
+          }
+        }
+        const leftFinal =
+          n.align === 'center'
+            ? left + (boxW - boxFinal) / 2
+            : n.align === 'right'
+              ? left + boxW - boxFinal
+              : left
+        const obj = new fabric.Textbox(n.text, {
+          left: leftFinal,
+          top: topBase + topAdj,
+          width: boxFinal,
+          fontSize: fsPx,
+          fontFamily: TEMPLATE_FONT,
+          fontWeight: n.bold ? 'bold' : 'normal',
+          fill: '#000000',
+          originX: 'left',
+          originY: 'top',
+          textAlign: n.align,
+          splitByGrapheme: true,
+        })
+        this.finalizeObject(obj, 'text', n.text, false)
+      } else if (n.kind === 'rect') {
+        const obj = new fabric.Rect({
+          left: ox + mmToPx(n.xMm),
+          top: oy + mmToPx(n.yMm),
+          width: mmToPx(n.wMm),
+          height: mmToPx(n.hMm),
+          // 实心块（表格分隔条/横线）用 fill；空心框用 stroke
+          fill: n.filled ? '#000000' : 'transparent',
+          stroke: n.filled ? '' : '#000000',
+          strokeWidth: n.filled ? 0 : Math.max(0.5, mmToPx(n.strokeMm)),
+          strokeUniform: true,
+          originX: 'left',
+          originY: 'top',
+        })
+        this.finalizeObject(obj, 'rect', null, false)
+      } else {
+        const group = this.buildBarcodeInto(n, ox, oy)
+        if (group) this.finalizeObject(group, 'barcode', n.text, false)
+      }
+    }
+
+    // 纸外半透明 / 内容刷新（相当于一次完整重载后的收尾）
+    this.refreshOutsidePaperAll()
+    this.refreshAllContent()
+    this.canvas.requestRenderAll()
+    this._suppressDirty = false
+    this.events.onDirty()
+    this.events.onActiveChange(null)
+  }
+
+  /**
+   * 在模板给定的盒子里放下一个条码/二维码：
+   * 等比缩放到「恰好装进盒子」，宽度有富余时水平居中。返回条码组（未加入画布）。
+   */
+  private buildBarcodeInto(
+    n: TplBarcodeNode,
+    ox: number,
+    oy: number,
+  ): fabric.Group | null {
+    const settings = defaultSettingsFor(n.barcodeType)
+    const built = this.buildBarcodeGroup(n.barcodeType, n.text, settings)
+    if (!built) return null
+    const { group, w, h, barH } = built
+    const boxW = mmToPx(n.wMm)
+    const boxH = mmToPx(n.hMm)
+    const raw = Math.min(boxW / (w || 1), boxH / (h || 1))
+    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1
+    group.set({ scaleX: scale, scaleY: scale })
+
+    const c = cf(group)
+    c._barcodeType = n.barcodeType
+    c._barcodeSettings = settings
+    c._barcodeUnit = { w, barH }
+    c._barcodeTextOffsetMm = 0
+    c._barcodeTargetMm = roundMm(pxToMm((is2dType(n.barcodeType) ? Math.max(w, h) : barH) * scale))
+    // 供 refreshAllContent 判断"内容没变就不用重建"
+    c._barcodeRendered = barcodeSignature(n.barcodeType, n.text, settings, 0)
+    // 一维码：人读文字按 pt 定标，避免被整组缩放压小
+    if (!is2dType(n.barcodeType)) this.applyBarcodeTextCompensation(group)
+
+    group.set({ left: ox + mmToPx(n.xMm) + Math.max(0, (boxW - w * scale) / 2), top: oy + mmToPx(n.yMm) })
+    return group
   }
 
   getObjectCount() {
@@ -3093,9 +3305,22 @@ export class CanvasController {
   }
 
   // ── 撤销 / 复制粘贴 / 键盘微调 ───────────────────────────
+  /**
+   * 历史快照。
+   *
+   * ⚠️ 必须走 `this.toJSON()`（= canvas.toJSON + 写入 `_papers` / `_activePaperId`、剔除纸卡
+   * 与视口变换），不能用裸的 `canvas.toJSON()`：后者不含纸张布局，撤销时只回滚对象、
+   * 不回滚纸张尺寸 —— 「套用 100×70 模板 → 再套用 40×30 模板 → Ctrl+Z」会得到
+   * 「100×70 的内容画在 40×30 的纸上」，对象整片落到纸外变灰且不进导出。
+   * 纸卡本身是渲染产物，`loadFromJSON` 收尾会重建，绝不进快照（否则每次往返叠一层白底）。
+   */
+  private snapshot(): Record<string, unknown> {
+    return JSON.parse(JSON.stringify(this.toJSON())) as Record<string, unknown>
+  }
+
   /** 在产生一次“语义编辑”前调用：把当前画布压入撤销栈 */
   pushHistory() {
-    this._commitHistory(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
+    this._commitHistory(this.snapshot())
   }
 
   /** 栈深上限，防止长会话内存无限增长 */
@@ -3133,7 +3358,7 @@ export class CanvasController {
   undo(): boolean {
     const snap = this.undoStack.pop()
     if (!snap) return false
-    this._pushRedo(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
+    this._pushRedo(this.snapshot())
     this._typingSeen = false
     this.canvas.discardActiveObject()
     this.loadFromJSON(snap)
@@ -3147,7 +3372,7 @@ export class CanvasController {
     const snap = this.redoStack.pop()
     if (!snap) return false
     // 反向：把撤销前的状态存回撤销栈。注意不能用 _commitHistory（它会清空 redo 栈）
-    this._pushUndo(JSON.parse(JSON.stringify(this.canvas.toJSON())) as Record<string, unknown>)
+    this._pushUndo(this.snapshot())
     this._typingSeen = false
     this.canvas.discardActiveObject()
     this.loadFromJSON(snap)

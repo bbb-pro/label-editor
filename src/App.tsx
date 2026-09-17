@@ -35,6 +35,8 @@ import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
+import TemplateLibrary from '@/sections/TemplateLibrary'
+import { buildTemplateSpec, type LibTemplate } from '@/lib/templateLibrary'
 import { useIsCompact } from '@/hooks/use-compact'
 import {
   Layers,
@@ -99,6 +101,8 @@ export default function App() {
   const [activeSerial, setActiveSerial] = useState<SerialSpec | null>(null)
   /** 多选/编组状态（count≥2 多对象、isGroup 单个编组整体、isBarcodeGroup 单个条码组） */
   const [selection, setSelection] = useState<{ count: number; isGroup: boolean; isBarcodeGroup: boolean }>({ count: 0, isGroup: false, isBarcodeGroup: false })
+  /** 模板库对话框 */
+  const [libraryOpen, setLibraryOpen] = useState(false)
 
   // ── 响应式布局 / 手抓平移 / 移动端属性抽屉 ─────────────
   const isCompact = useIsCompact()
@@ -1132,6 +1136,30 @@ export default function App() {
     [zoomTo100],
   )
 
+  /**
+   * 从模板库选一个模板：按其尺寸/版式重建画布。
+   * 与「导入模板」等价，只是数据源换成内置的公开模板；纸张尺寸、设计态、
+   * 视图（回到 100% 实际大小）都按导入同一套规则处理。
+   */
+  const onPickLibraryTemplate = useCallback(
+    (tpl: LibTemplate) => {
+      const ctrl = ctrlRef.current
+      if (!ctrl) return
+      const spec = buildTemplateSpec(tpl)
+      ctrl.loadTemplate(spec)
+      setPaper({ widthMm: spec.widthMm, heightMm: spec.heightMm })
+      setActive(null)
+      setCurrentIndex(-1)
+      setUsedVariables([])
+      setLibraryOpen(false)
+      requestAnimationFrame(() => zoomTo100())
+      toast.success(`已载入模板「${tpl.name}」`, {
+        description: `${spec.widthMm}×${spec.heightMm}mm · ${spec.categoryName} · ${spec.nodes.length} 个元素`,
+      })
+    },
+    [zoomTo100],
+  )
+
   const onExportJson = useCallback(() => {
     const ctrl = ctrlRef.current
     if (!ctrl) return
@@ -1440,6 +1468,7 @@ export default function App() {
         onNew={onNew}
         onImportJson={onImportJson}
         onExportJson={onExportJson}
+        onOpenLibrary={() => setLibraryOpen(true)}
         onUndo={onUndo}
         onRedo={onRedo}
         canUndo={history.canUndo}
@@ -1840,6 +1869,12 @@ export default function App() {
         onConfirm={(copies) => {
           if (batchMode) void runBatch(batchMode, copies)
         }}
+      />
+
+      <TemplateLibrary
+        open={libraryOpen}
+        onOpenChange={setLibraryOpen}
+        onPick={onPickLibraryTemplate}
       />
 
       <Toaster richColors position="top-center" />
