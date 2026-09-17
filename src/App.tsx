@@ -858,13 +858,32 @@ export default function App() {
   }, [tool])
 
   // ── 纸张变化应用到画布 ──────────────────────────────────
-  const applyPaper = useCallback((p: PaperSize) => {
-    const ctrl = ctrlRef.current
-    if (!ctrl) return
-    ctrl.applyPaper(p)
-    setPaper(p)
-    requestAnimationFrame(() => fitToView())
-  }, [fitToView])
+  const applyPaper = useCallback(
+    (p: PaperSize) => {
+      const ctrl = ctrlRef.current
+      if (!ctrl) return
+      ctrl.applyPaper(p)
+      setPaper(p)
+      // 改尺寸**只重新居中当前标签，绝不改缩放**。
+      //
+      // ⚠️ 这里两个做法都不能用：
+      //   ① fitToView()：它按「工作区」适配（= 所有标签 + 四周 600mm 留白），
+      //      纸一大缩放就掉下来 —— 线上实测 150×100 → 200×180 时 zoom 从 1.00 变 0.877，
+      //      标签被压小又挪位，用户看到的就是「画布跑偏 / 被撑满窗口」；
+      //   ② zoomTo100()：虽然保住 1:1，但用户在 200% 下改尺寸会被硬拉回 100%，同样是跳。
+      // 用户要的是「按标签实际大小显示」→ 保持当前 zoom，只把纸心对齐视口中心。
+      requestAnimationFrame(() => {
+        const c = ctrlRef.current
+        if (!c) return
+        const q = panForCenteredPaper(zoomRef.current)
+        const autoWas = autoViewRef.current
+        setPanView(q.x, q.y)
+        // setPanView 会把 autoView 置 false（它被用户操作复用），按原状态还原
+        autoViewRef.current = autoWas
+      })
+    },
+    [panForCenteredPaper, setPanView],
+  )
 
   const handlePaperChange = useCallback(
     (p: PaperSize) => {
@@ -1568,7 +1587,8 @@ export default function App() {
                   if (!ctrl || !cur) return
                   if (!window.confirm(`删除「${cur.name}」？该标签上的内容会一起删除。`)) return
                   ctrl.removePaper(cur.id)
-                  fitToView()
+                  // 与新建/改尺寸一致：保持 100% 实际大小，居中剩下的活动标签，不要 fit 撑满窗口
+                  requestAnimationFrame(() => zoomTo100())
                 }}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
               >

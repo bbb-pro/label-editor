@@ -11,6 +11,7 @@ import {
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import { pxToPt, ptToPx } from '@/lib/textStyles'
 import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
+import { DEFAULT_PAPER } from '@/types/template'
 import { resolveContent } from '@/lib/content'
 import type { ActiveObject, TextFormatSnapshot, TextStyle } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
@@ -1238,27 +1239,96 @@ export class CanvasController {
   /** 改当前活动纸的尺寸（面板的纸张宽/高） */
   applyPaper(paper: PaperSize) {
     const ap = this.activePaper
+    // 先按**改之前**的几何快照绑定内容：等尺寸写进去后再判，缩小的那张纸会把
+    // 原本在它上面的内容判成"纸外"，于是不搬 → 内容掉队（错位到邻居纸上）。
+    const bindRects = this.paperRectsSnapshot()
     ap.widthMm = paper.widthMm
     ap.heightMm = paper.heightMm
-    this.relayoutPapers()
+    this.relayoutPapers(bindRects)
     this.resizeWorkspace()
     this.recreatePaperRects()
     this.canvas.requestRenderAll()
     this.events.onDirty()
   }
 
+  /** 各张纸当前的矩形快照（给 relayoutPapers 做"改尺寸前"的绑定基准用） */
+  private paperRectsSnapshot(): Array<{ id: string; left: number; top: number; w: number; h: number }> {
+    return this.papers.map((p) => ({
+      id: p.id,
+      left: p.left,
+      top: p.top,
+      w: mmToPx(p.widthMm),
+      h: mmToPx(p.heightMm),
+    }))
+  }
+
   // ── 多标签（多纸）管理 ──────────────────────────────────
   /**
    * 纵向重排：纸 0 保持位置不变，其后每张纸紧接上一张下沿 + 间距。
    * 改尺寸/增删纸后调用，避免高矮不一时互相重叠或留空。
+   *
+   * ⚠️ 内容必须**跟着自己的纸一起走**：纸的位置一变（前面那张改高、或删掉一张），
+   * 后面所有纸都会上下平移，而对象坐标是绝对值 —— 不搬内容就会出现
+   * 「标签 2 的内容留在原地、掉到标签 1 的纸上」（实测：改标签 1 高度后，
+   * 「标签二内容」的归属纸从 标签 2 变成 标签 1）。所以：
+   *   ① 重排前把内容绑定到纸上（重排后就判不准了）；
+   *   ② 重排纸；
+   *   ③ 按每张纸的位移量把绑在它上面的内容整体平移（横向不变：所有纸左对齐）。
+   *
+   * @param bindRects 「绑定内容」时该用的纸矩形。改尺寸场景必须传**改之前**的快照
+   *   （见 applyPaper）：否则缩小的那张纸会把原本在它上面的内容判成纸外、不搬。
    */
-  private relayoutPapers() {
+  private relayoutPapers(bindRects?: Array<{ id: string; left: number; top: number; w: number; h: number }>) {
     if (this.papers.length === 0) return
     const gap = mmToPx(PAPER_GAP_MM)
+
+    // ① 绑定：判据 = 与哪张纸的**重叠面积最大**就归哪张；完全不相交的不绑（例如
+    //    用户拖到纸外"暂存"的元素，不该被莫名搬走）。
+    //    ⚠️ 一律走 absoluteBounds()，getBoundingRect(true) 对编组/多选内的子对象给错坐标。
+    const rects = bindRects ?? this.paperRectsSnapshot()
+    const groups: Array<{ id: string; top: number; objs: fabric.Object[] }> = rects.map((r) => ({
+      id: r.id,
+      top: r.top,
+      objs: [],
+    }))
+    const byId = new Map(rects.map((r) => [r.id, r]))
+    for (const o of this.canvas.getObjects()) {
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
+      const b = absoluteBounds(o)
+      let bestId: string | null = null
+      let bestArea = 0
+      for (const r of rects) {
+        const ow = Math.min(b.left + b.width, r.left + r.w) - Math.max(b.left, r.left)
+        const oh = Math.min(b.top + b.height, r.top + r.h) - Math.max(b.top, r.top)
+        if (ow <= 0 || oh <= 0) continue
+        const area = ow * oh
+        if (area > bestArea) {
+          bestArea = area
+          bestId = r.id
+        }
+      }
+      if (bestId) groups.find((g) => g.id === bestId)!.objs.push(o)
+    }
+
+    // ② 重排纸
     for (let i = 1; i < this.papers.length; i++) {
       const prev = this.papers[i - 1]
       this.papers[i].top = prev.top + mmToPx(prev.heightMm) + gap
       this.papers[i].left = prev.left
+    }
+
+    // ③ 内容随纸平移
+    for (const g of groups) {
+      if (!g.objs.length) continue
+      const paper = this.papers.find((p) => p.id === g.id)
+      const prevTop = (byId.get(g.id) ?? { top: g.top }).top
+      if (!paper) continue
+      const dy = paper.top - prevTop
+      if (!dy) continue
+      for (const o of g.objs) {
+        o.set({ top: (o.top ?? 0) + dy })
+        o.setCoords()
+      }
     }
   }
 
@@ -3232,10 +3302,24 @@ export class CanvasController {
     })
   }
 
+  /**
+   * 新建标签（清空画布）：丢掉**全部**旧标签，回到「单张默认纸」。
+   *
+   * ⚠️ 旧实现只做了 canvas.clear() + 重建纸卡，`papers` 数组原样留着 ——
+   * 于是「有 2 张标签、且第 2 张被改过尺寸」时点新建，画布上依旧留着那张
+   * 改过尺寸的纸（而且它还是活动纸），面板显示的也是旧尺寸，与提示语
+   * 「已新建空白标签，默认 150×100mm」自相矛盾，看着就是「画布跑偏了」。
+   * 必须把多标签布局一并重置，才和「新建一个文件」的语义一致。
+   */
   clearAll() {
     this.canvas.clear()
     // 清空后重建"纸卡"背景 + 恢复工作区底色
-    this.canvas.backgroundColor = '#e2e8f0'
+    this.canvas.backgroundColor = WORKSPACE_BG
+    const margin = mmToPx(WORKSPACE_MARGIN_MM)
+    const paper = this.makePaper('标签 1', DEFAULT_PAPER, margin, margin)
+    this.papers = [paper]
+    this.activePaperIdValue = paper.id
+    this.resizeWorkspace()
     this.recreatePaperRects()
     this.canvas.requestRenderAll()
     this.events.onDirty()
