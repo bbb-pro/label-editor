@@ -1,7 +1,13 @@
 // 画布引擎：封装 fabric 生命周期与对象操作，便于 React 以命令式调用
 import { fabric } from 'fabric'
 import { mmToPx, pxToMm, roundMm } from '@/lib/mm'
-import { is2dType, defaultSettingsFor, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
+import {
+  is2dType,
+  defaultSettingsFor,
+  DEFAULT_BARCODE_SETTINGS,
+  type BarcodeType,
+  type BarcodeRenderSettings,
+} from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import { pxToPt, ptToPx } from '@/lib/textStyles'
 import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
@@ -441,8 +447,10 @@ export class CanvasController {
       const t = (e as { target?: fabric.Object }).target ?? null
       // 文本框：拖角/拖边只改“盒宽”，字号恒定、文字自动重排（不拉伸文字）
       if (t instanceof fabric.Textbox) this.resizeTextboxBox(t)
-      // 条码：拉伸只作用于条码条，抵消非等比部分，避免人读文字被拉变形
-      else if (t && isBarcodeKind(cf(t).kind)) this.applyBarcodeTextCompensation(t)
+      // 条码：拉伸只作用于条码条，抵消非等比部分，避免人读文字被拉变形。
+      // 编组 / 多选（ActiveSelection）被缩放时，t 是父容器 —— 必须把里面的条码也刷一遍，
+      // 文字才不会跟着组一起变大变小。
+      else if (t) this.eachBarcode(t, (b) => this.applyBarcodeTextCompensation(b))
       this.updateOutsidePaperVisual(t)
       this.applySnap(t)
     })
@@ -462,6 +470,12 @@ export class CanvasController {
       this.clearGuides()
       // 拖出/拖回后立即刷一次透明度视觉（编组/多选内也按最外层对象评估）
       this.refreshOutsidePaperAll()
+      // 变换收尾：把画布上所有条码的人读文字再刷一遍。
+      // 多选/编组缩放期间文字已按「父容器实时 scale」抵消过，而 fabric 在收尾时可能把父容器的
+      // scale 结算进子对象 —— 累乘后的总量不变，这里再刷一次即可保证收尾后依然精确。
+      for (const o of this.flattenTopLevel()) {
+        if (isBarcodeKind(cf(o).kind)) this.applyBarcodeTextCompensation(o)
+      }
       this.emitActive()
       // 提交「拖动前」的快照（在 mouse:down 时采集）—— 必须压入旧状态，撤销才会回到操作前。
       // 直接在 modified 里 pushHistory 会把「已变换后」的状态压栈，撤销看似生效实则原地不动。
@@ -1901,13 +1915,16 @@ export class CanvasController {
     const built = this.buildBarcodeGroup(type, design, settings)
     if (!built) return
     const { group, w, h } = built
-    // 2D 码必须等比；一维码按条区锚定 + 「超高」保底容纳人读文字
+    // 2D 码必须等比；一维码按「条区高度」锚定。
+    // ⭐ 一次性定尺：一维码除「条区目标高」外，再为**基准字号**的人读文字留出文字带。
+    //    注意这里用的是常量基准字号（DEFAULT_BARCODE_SETTINGS.textSizePt），**不是**用户设置值
+    //    → 新增条码的默认大小与用户后来把字号调成多少无关，不会出现「改字号顺带改尺寸」的棘轮。
     let k = mmToPx(targetMm) / (is2d ? Math.max(w, h) : built.barH || h || 1)
     if (!is2d) {
       const bandUnit = h - built.barH
       if (bandUnit > 1) {
-        const needSy = ptToPx(Math.max(1, settings.textSizePt ?? 9)) / (bandUnit * 0.72)
-        if (needSy > k) k = needSy
+        const fit = ptToPx(DEFAULT_BARCODE_SETTINGS.textSizePt) / (bandUnit * 0.72)
+        if (fit > k) k = fit
       }
     }
     group.set({ scaleX: k, scaleY: k })
@@ -1934,7 +1951,14 @@ export class CanvasController {
     textOffsetMm = 0,
   ): { group: fabric.Group; w: number; h: number; barH: number } | null {
     try {
-      const vec = renderBarcodeVectorRects(type, text, settings)
+      // ⚠️ 「人读文字带」的几何一律按**基准字号**量取（= DEFAULT_BARCODE_SETTINGS.textSizePt），
+      // 不跟随用户设置的字号 —— 否则 built.h 会随字号变，整组尺寸（含宽度）跟着变。
+      // 这样 built.h / built.barH 与 textSizePt 完全无关：字号只由 applyBarcodeTextCompensation
+      // 作用到文字 child 上，代码本身几何保持不变。
+      const vec = renderBarcodeVectorRects(type, text, {
+        ...settings,
+        textSizePt: DEFAULT_BARCODE_SETTINGS.textSizePt,
+      })
       if (!vec.rects.length) return null
       const children: fabric.Object[] = vec.rects.map(
         (r) =>
@@ -2006,39 +2030,59 @@ export class CanvasController {
   }
 
   /**
+   * 遍历「某对象及其所有后代」里的条码，逐个执行回调。
+   * 条码是原子叶子（不再下钻它的模块矩形），编组 / 多选里的条码也能被找到。
+   */
+  private eachBarcode(obj: fabric.Object, cb: (b: fabric.Object) => void) {
+    if (isBarcodeKind(cf(obj).kind)) {
+      cb(obj)
+      return
+    }
+    const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
+    if (Array.isArray(kids)) for (const k of kids) this.eachBarcode(k, cb)
+  }
+
+  /**
    * 让条码「人读文字」完全不随拉伸变化 —— 文字大小只由「可读文字字号」决定。
    *
    * 原理：fabric Group 会把自身 scale 叠加到子对象。若给文字 child 设
    * scaleX = glyphPx/(fontSize·sx)、scaleY = glyphPx/(fontSize·sy)，则其
    * 在画布上的视觉字号 = fontSize×childScale×groupScale = glyphPx：
-   *  - 与 group 拉伸（sx/sy）无关 → 拉伸条码条时文字字号恒定、字形方正（不拉扁）；
-   *  - glyphPx 由「可读文字字号」换算成真实逻辑 px = ptToPx(textSizePt)，
-   *    随字号线性、清晰可见（旧实现用固定小缩放 ≈0.3，把 9pt 压成亚像素 ~2.7px，
-   *    故调字号只见空间变大、字几乎不变）。
+   *  - 与 group 拉伸（sx/sy）无关 → 拉伸/缩放条码时文字字号恒定、字形方正（不拉扁）；
+   *  - glyphPx 严格等于 ptToPx(textSizePt)，**不再按文字带可用空间封顶**。
+   *    旧实现有 capPx 封顶：把条码缩到 0.2× 时 12px 的字被压成 8.2px（用户报过
+   *    「拉伸缩放改变了字体大小」）。现在字号是「绝对量」：改字号只改文字，缩放只改代码。
    *
-   * glyphPx 还会参考 band 的实际可用空间做宽松封顶，避免极端小码上文字溢出成叠印；
-   * 正常尺寸的码（band 逻辑高 ≥ 目标字号）下不封顶，字号完全按设置生效。
+   * 文字带按**基准字号**预留空间（见 buildBarcodeGroup），故字号设得很大时文字会略微
+   * 溢出文字带 —— 这是「字号/尺寸彻底解耦」的必然结果：需要更大边距就把条码整体拉高，
+   * 或调「距条区距离 (mm)」。
    */
   private applyBarcodeTextCompensation(obj: fabric.Object) {
-    const sx = obj.scaleX ?? 1
-    const sy = obj.scaleY ?? 1
+    // ⚠️ 必须累乘「父容器链」的缩放：条码可能被编组 / 多选（ActiveSelection）包着，
+    //    父容器的 scale 同样会把文字放大。只算 obj.scaleX 会让编组内的条码文字跟着组缩放
+    //    （即「拉伸缩小组 = 文字变大」）。多选时父层就是那个临时 ActiveSelection。
+    let px = 1
+    let py = 1
+    let p = (obj as unknown as { group?: fabric.Object | null }).group ?? null
+    for (let guard = 0; p && guard < 16; guard++) {
+      px *= Math.abs(p.scaleX ?? 1)
+      py *= Math.abs(p.scaleY ?? 1)
+      p = (p as unknown as { group?: fabric.Object | null }).group ?? null
+    }
+    const sx = Math.abs(obj.scaleX ?? 1) * px
+    const sy = Math.abs(obj.scaleY ?? 1) * py
     if (!sx || !sy) return
     const kids = (obj as unknown as { _objects?: fabric.Object[] })._objects
     if (!Array.isArray(kids)) return
     const c = cf(obj)
     const textPt = Math.max(1, c._barcodeSettings?.textSizePt ?? 9)
-    const wantPx = ptToPx(textPt)
-    // 文字带可用逻辑高(px) = 整组逻辑高 − 条区逻辑高。小码时用它封顶防叠印，大码时不限。
-    const barUnitH = c._barcodeUnit?.barH ?? this.barcodeBarUnitHeight(obj)
-    const bandPx = (Math.abs(obj.height ?? 0) - Math.abs(barUnitH)) * Math.abs(sy)
-    const capPx = bandPx > 1 ? bandPx * 1.1 : Infinity
-    const glyphPx = Math.min(wantPx, capPx)
+    const glyphPx = ptToPx(textPt)
     c._barcodeTextScale = Math.min(sx, sy) // 保留字段(兼容旧模板读取/序列化)；不再驱动字号
     for (const k of kids) {
       // 只处理人读文字（条码条是 rect，保持随拉伸变化）
       if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
       const fs = Math.max((k as fabric.Text).fontSize ?? 1, 1)
-      k.set({ scaleX: glyphPx / (fs * Math.abs(sx)), scaleY: glyphPx / (fs * Math.abs(sy)) })
+      k.set({ scaleX: glyphPx / (fs * sx), scaleY: glyphPx / (fs * sy) })
     }
   }
 
@@ -2063,50 +2107,71 @@ export class CanvasController {
     // 旧对象有有效尺寸（正常重绘 / 手动缩放过）→ 沿用当前尺寸，保留手动缩放；
     // 否则（多为载入模板时 fabric 重建出的空组，尺寸为 0）按目标 mm 推算，避免缩成 0 不可见。
     const hasOld = curW > 0 && curH > 0
+    // 旧对象记录的「单位几何」（未乘 scale 的栅格尺寸）。只有它与 built.w/built.barH 同口径，
+    // 用 fabric bbox(getScaledWidth) 与 built 换算会混入静区误差（见 2D 分支注释）。
+    const unit = oc._barcodeUnit
+    const unitOk = !!unit && unit.w > 0 && unit.barH > 0
     let kx: number
     let ky: number
     if (is2d) {
-      // 2D 码必须等比（否则无法扫描）
+      // 2D 码必须等比（否则无法扫描）。
+      // ⚠️ 单位必须同口径：`getScaledWidth()` 是**内容外框**（fabric bbox，不含四周静区），
+      //    而 `built.w/built.h` 是**栅格尺寸**（含静区）—— 两者之比恒 ≈0.85 ⇒ 旧写法
+      //    `k = max(curW,curH)/max(built.w,built.h)` 会让二维码**每次重建都缩水 15%**
+      //    （改内容 / 改容错等级 / 改静区 / 存档后重开都会触发，用户报过「二维码大小会变」）。
+      //    现在优先「内容外框 ↔ 内容外框」对比：**可见尺寸逐次严格保持**（不再有静区占比漂移）；
+      //    旧对象量不出外框（载入模板的空壳组）时，退回「栅格 ↔ 栅格」换算。
+      const nextInk = Math.max(group.width ?? 0, group.height ?? 0)
+      const nextRaster = Math.max(built.w, built.h)
       const targetMm = oc._barcodeTargetMm ?? 18
-      const k = hasOld
-        ? Math.max(curW, curH) / Math.max(built.w, built.h)
-        : mmToPx(targetMm) / (built.w || 1)
-      kx = k
-      ky = k
-    } else if (!hasOld) {
-      // 多为载入模板时 fabric 重建出的空组（尺寸为 0）。一维码按「条区目标高」定基缩放，
-      // 再叠加文字带所需的「超高」——使新增/载入的一维码天然能容纳可读文字（字清晰）。
-      const targetMm = oc._barcodeTargetMm ?? (type === 'itf14' ? 12 : 8)
-      let k = mmToPx(targetMm) / (built.barH || built.h || 1)
-      const bandUnit = built.h - built.barH
-      if (bandUnit > 1) {
-        const tsp = oc._barcodeSettings?.textSizePt ?? 9
-        const needSy = ptToPx(Math.max(1, tsp)) / (bandUnit * 0.72)
-        if (needSy > k) k = needSy
+      let k: number
+      if (hasOld && nextInk > 0) {
+        k = Math.max(curW, curH) / nextInk
+      } else if (unitOk) {
+        k =
+          Math.max(unit!.w * Math.abs(old.scaleX ?? 1), unit!.barH * Math.abs(old.scaleY ?? 1)) /
+          (nextRaster || 1)
+      } else {
+        k = mmToPx(targetMm) / (built.w || 1)
       }
       kx = k
       ky = k
     } else {
-      // 一维码：缩放必须按「条码条区」换算，绝不能按含人读文字的整高换算。
+      // 一维码：缩放必须按「条码条区」换算，绝不能按含人读文字的整高换算 ——
       // 否则调整「可读文字字号」→ fullHeight 变化 → ky 跟着变 → 整条码被压缩/放大。
       // 优先用记录的单位几何；缺失时（旧模板）从旧组的模块矩形反推。
-      const prevBarH = oc._barcodeUnit?.barH ?? this.barcodeBarUnitHeight(old)
+      const prevBarH = unitOk ? unit!.barH : this.barcodeBarUnitHeight(old)
       const kBar =
-        prevBarH > 0 && built.barH > 0 ? ((old.scaleY ?? 1) * prevBarH) / built.barH : curH / (built.h || 1)
-      // 保留用户手动造成的非等比拉伸比（未拉伸时 ratio = 1，即等比）
-      const syPrev = old.scaleY ?? 1
-      const ratio = Math.abs(syPrev) > 1e-6 ? (old.scaleX ?? 1) / syPrev : 1
-      ky = kBar
-      // 「超高再长」保底：人读文字带需要的纵向缩放若大于条区锚定值，则抬高 ky，
-      // 让整码长高到能容纳目标字号（方案：默认整码高度固定，字号超出文字带才增高）。
-      // band 栅格 = 整高 − 条区高（仅 1D 含文字时 > 0）。计算放在 ky 用前。
-      const bandUnit = built.h - built.barH
-      if (bandUnit > 1) {
-        const tsp = oc._barcodeSettings?.textSizePt ?? 9
-        const needSy = ptToPx(Math.max(1, tsp)) / (bandUnit * 0.72) // band 留 28% 上下间隙
-        if (needSy > ky) ky = needSy
+        hasOld && prevBarH > 0 && built.barH > 0
+          ? (Math.abs(old.scaleY ?? 1) * prevBarH) / built.barH
+          : 0
+      if (kBar > 0) {
+        // 保留用户手动造成的非等比拉伸比（未拉伸时 ratio = 1，即等比）
+        const syPrev = Math.abs(old.scaleY ?? 1)
+        const ratio = syPrev > 1e-6 ? Math.abs(old.scaleX ?? 1) / syPrev : 1
+        // ⭐ ky 只按「条区高」换算 —— 重建前后条区尺寸逐像素一致，改字号不动几何。
+        // 旧实现还会按文字带需求抬高 ky（needSy），改一次大字号就把 scaleY 永久写大，
+        // 之后把字号调回也回不到原尺寸（棘轮效应，用户报过「调整字体改变了条码大小」）。
+        ky = kBar
+        kx = ky * ratio
+      } else if (hasOld) {
+        // 兜底：反推不出条区高（极端旧模板）→ 沿用当前整高比例
+        const k = curH / (built.h || 1)
+        kx = k
+        ky = k
+      } else {
+        // 载入模板时 fabric 重建出的空组（尺寸为 0）：按「条区目标高」+ 为**基准字号**
+        // 留出文字带一次性定尺，与 addBarcode 同一套公式（同样只用常量基准字号）。
+        const targetMm = oc._barcodeTargetMm ?? (type === 'itf14' ? 12 : 8)
+        let k = mmToPx(targetMm) / (built.barH || built.h || 1)
+        const bandUnit = built.h - built.barH
+        if (bandUnit > 1) {
+          const fit = ptToPx(DEFAULT_BARCODE_SETTINGS.textSizePt) / (bandUnit * 0.72)
+          if (fit > k) k = fit
+        }
+        kx = k
+        ky = k
       }
-      kx = ky * ratio
     }
     group.set({
       scaleX: kx,
@@ -3239,6 +3304,16 @@ export class CanvasController {
     const boxH = mmToPx(n.hMm)
     const raw = Math.min(boxW / (w || 1), boxH / (h || 1))
     const scale = Number.isFinite(raw) && raw > 0 ? raw : 1
+    // 一维码：人读文字的字号是「绝对量」（不随拉伸/缩放变化），所以模板必须**一次性**定好合适的 pt，
+    // 否则默认 9pt 会远大于这个小盒子里的文字带（模板里的小条码会被文字盖住）。
+    // 按「文字带在设计比例下可容纳的字号」反算 pt —— 只在载入时算一次，
+    // 之后「改字号」与「改尺寸」互不影响（这是解耦后的既定行为）。
+    if (!is2dType(n.barcodeType)) {
+      const bandUnit = h - barH
+      if (bandUnit > 1) {
+        settings.textSizePt = Math.max(4, Math.min(48, Math.round(pxToPt(bandUnit * scale * 0.8))))
+      }
+    }
     group.set({ scaleX: scale, scaleY: scale })
 
     const c = cf(group)

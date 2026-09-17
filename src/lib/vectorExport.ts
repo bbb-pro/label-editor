@@ -14,7 +14,7 @@ import type { PaperOrder, PaperSize, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
 import { pxToPt } from '@/lib/textStyles'
-import { type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
+import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import type { fabric } from 'fabric'
 // 引入后会给 jsPDF 原型挂上 .svg()，用于把完整 SVG 绘制为矢量路径
@@ -641,7 +641,13 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
   const rawText = ctrl.contentStringFor(o) || ' '
   let vec: ReturnType<typeof renderBarcodeVectorRects>
   try {
-    vec = renderBarcodeVectorRects(type, rawText, c._barcodeSettings ?? {})
+    // ⚠️ 与画布（canvasEngine.buildBarcodeGroup）保持一致：文字带的几何按**基准字号**量取，
+    // 不跟随 textSizePt —— 否则 PDF 里「条区/文字带」的高度分配会随字号变，
+    // 而画布已固定为基准比例（画布与 PDF 会出现条区高矮不一致的预览偏差）。
+    vec = renderBarcodeVectorRects(type, rawText, {
+      ...(c._barcodeSettings ?? {}),
+      textSizePt: DEFAULT_BARCODE_SETTINGS.textSizePt,
+    })
   } catch {
     return // 内容不符合该码制 → 跳过（与位图路径一致）
   }
@@ -672,8 +678,12 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
     const textPt = ((c._barcodeSettings ?? {}) as { textSizePt?: number }).textSizePt ?? 9
     // 文字条带高度(mm)
     const textBandH = box.h - barHmmF
-    if (textBandH > 0.5) {
-      const fontSizePt = Math.min(textPt, textBandH * 72 / 25.4 * 0.72)
+    if (textBandH > 0.2) {
+      // ⚠️ 字号按「可读文字字号」**原样**输出，不再按文字带高度封顶 —— 与画布一致：
+      //    画布的人读文字是「绝对字号」（拉伸/缩放不改字号），旧写法
+      //    `min(textPt, textBandH*72/25.4*0.72)` 会让 PDF 的字号只由条码高度决定
+      //    （实测 9pt/20pt 都被压成 8.36pt），与预览不一致。
+      const fontSizePt = Math.max(1, textPt)
       const textOffsetMm = c._barcodeTextOffsetMm ?? 0
       // 文字带中心 + 额外偏移（mm）：>0 把文字往下推拉开与条区距离，<0 拉近
       const cy = box.top + barHmmF + textBandH / 2 + textOffsetMm
