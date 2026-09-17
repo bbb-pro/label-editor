@@ -44,7 +44,7 @@ import {
 } from 'lucide-react'
 import type { PaperSize, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
-import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec } from '@/types/editor'
+import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec, BarcodeAlign } from '@/types/editor'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { FONT_FAMILIES } from '@/lib/textStyles'
 import MmField from '@/components/editor/MmField'
@@ -69,6 +69,8 @@ interface PropertyPanelProps {
   onBarcodeSettingsChange: (patch: Partial<BarcodeRenderSettings>) => void
   /** 条码：人读文字与条区距离(mm) */
   onBarcodeTextOffsetChange?: (mm: number) => void
+  /** 条码：对齐/生长锚点（内容变长条码变宽时向哪一侧扩展） */
+  onBarcodeAlignChange?: (align: BarcodeAlign) => void
   /** 内容对象：前缀/后缀 */
   onContentDecorChange: (patch: { prefix?: string; suffix?: string }) => void
   /** 内容对象：序列化配置（null=关闭） */
@@ -149,6 +151,7 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onToggleLock={props.onToggleLock}
           onBarcodeSettingsChange={props.onBarcodeSettingsChange}
           onBarcodeTextOffsetChange={props.onBarcodeTextOffsetChange}
+          onBarcodeAlignChange={props.onBarcodeAlignChange}
           onContentDecorChange={props.onContentDecorChange}
           onSerialChange={props.onSerialChange}
           onDuplicate={props.onDuplicate}
@@ -352,6 +355,7 @@ function SelectedObjectPanel({
   onToggleLock,
   onBarcodeSettingsChange,
   onBarcodeTextOffsetChange,
+  onBarcodeAlignChange,
   onContentDecorChange,
   onSerialChange,
   onDuplicate,
@@ -603,6 +607,36 @@ function SelectedObjectPanel({
 
       {isBarcode && active.barcodeSettings && (
         <Section title="条码属性">
+          {/*
+            对齐 / 生长锚点：Code128 这类码制「数据一多就变宽」，默认靠左会让它一直往右长、
+            顶出标签。这里给和文本同样的左/中/右三档，决定变宽时朝哪边扩展。
+          */}
+          <div className="mb-3 space-y-1.5">
+            <div className="flex items-center gap-1">
+              <span className="w-14 shrink-0 text-[11px] text-muted-foreground">对齐</span>
+              {(
+                [
+                  { key: 'left', Icon: AlignLeft, title: '靠左：左边缘固定，变宽时向右长' },
+                  { key: 'center', Icon: AlignCenter, title: '居中：中心固定，变宽时向两侧均分' },
+                  { key: 'right', Icon: AlignRight, title: '靠右：右边缘固定，变宽时向左长' },
+                ] as const
+              ).map(({ key, Icon, title }) => (
+                <Toggle
+                  key={key}
+                  size="sm"
+                  pressed={(active.barcodeAlign ?? 'left') === key}
+                  onPressedChange={() => onBarcodeAlignChange?.(key)}
+                  title={title}
+                  aria-label={title}
+                >
+                  <Icon className="h-4 w-4" />
+                </Toggle>
+              ))}
+            </div>
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              内容变长、条码变宽时的扩展方向；切换只改锚点，不移动当前位置。
+            </p>
+          </div>
           <BarcodeSettingsControls
             settings={active.barcodeSettings}
             is2d={active.barcodeType ? is2dType(active.barcodeType) : false}

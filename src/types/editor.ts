@@ -30,6 +30,14 @@ export interface TextFormatSnapshot {
   letterSpacingPt: number
 }
 
+/**
+ * 条码「对齐 / 生长锚点」：内容变长使条码变宽时，以哪一侧为基准扩展。
+ * 与文本的左/中/右是同一套语义 —— 靠左=左边缘固定向右长、居中=向两侧均分、
+ * 靠右=右边缘固定向左长（Code128 数据一多最容易右溢，靠右即可让它往左长）。
+ * 实现 = 条码组的 `originX`，因此「改内容」与「手动拖拽」都遵守同一锚点。
+ */
+export type BarcodeAlign = 'left' | 'center' | 'right'
+
 /** 序列化配置：批量打印时 {{seq}} 从 start 开始，每张 +step，补零到 minDigits 位 */
 export interface SerialSpec {
   enabled: boolean
@@ -76,6 +84,8 @@ export interface ActiveObject {
   barcodeSettings?: BarcodeRenderSettings
   /** 仅条码对象：人读文字相对条区的额外距离(mm)。>0 拉开，<0 拉近；默认 0。 */
   barcodeTextOffsetMm?: number
+  /** 仅条码对象：对齐/生长锚点（内容变长条码变宽时向哪一侧扩展），默认 'left' */
+  barcodeAlign?: BarcodeAlign
   /** 仅文本对象：文本格式 */
   textFormat?: TextFormatSnapshot
   /** 仅文本对象：区域框（开启后显示边框+底色，类似"区域文本框"） */

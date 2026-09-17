@@ -13,7 +13,7 @@ import { pxToPt, ptToPx } from '@/lib/textStyles'
 import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import { resolveContent } from '@/lib/content'
-import type { ActiveObject, TextFormatSnapshot, TextStyle } from '@/types/editor'
+import type { ActiveObject, TextFormatSnapshot, TextStyle, BarcodeAlign } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
 import type { TemplateSpec, TplBarcodeNode } from '@/lib/templateLibrary'
 
@@ -59,6 +59,13 @@ interface CustomFields {
    * <0 把文字上移靠近条区。默认 0。
    */
   _barcodeTextOffsetMm?: number
+  /**
+   * 条码「对齐 / 生长锚点」：内容变长让条码变宽时以哪一侧为基准扩展。
+   * 靠左（默认，= 历史行为）= 左边缘不动向右长；居中 = 向两侧均分；靠右 = 右边缘不动向左长。
+   * 实现就是条码组的 `originX`（`left` 的含义随它变），因此改内容 / 改码制 / 手动拖拽
+   * 都遵守同一锚点。缺省（老模板）按 'left' 处理，行为与以前完全一致。
+   */
+  _barcodeAlign?: BarcodeAlign
   /**
    * 上次真正渲染条码时用的「指纹」（码制 + 解析后文案 + 设置 + 文字偏移）。
    * 仅运行期缓存，不参与序列化：refreshAllContent 每次都会遍历所有条码，
@@ -1086,6 +1093,7 @@ export class CanvasController {
     let barcodeType: BarcodeType | undefined
     let barcodeSettings: BarcodeRenderSettings | undefined
     let barcodeTextOffsetMm: number | undefined
+    let barcodeAlign: BarcodeAlign | undefined
     let textFormat: TextFormatSnapshot | undefined
     let textRegion: { border: boolean; bg: boolean } | undefined
     let strokeWidth: number | undefined
@@ -1120,6 +1128,7 @@ export class CanvasController {
       barcodeType = c._barcodeType
       barcodeSettings = c._barcodeSettings ?? (barcodeType ? defaultSettingsFor(barcodeType) : undefined)
       barcodeTextOffsetMm = c._barcodeTextOffsetMm ?? 0
+      barcodeAlign = c._barcodeAlign ?? 'left'
     } else if (isStrokeKind(kind)) {
       strokeWidth = obj.strokeWidth ?? 1
       strokeColor = (obj.stroke as string) || '#000000'
@@ -1173,6 +1182,7 @@ export class CanvasController {
       barcodeType,
       barcodeSettings,
       barcodeTextOffsetMm,
+      barcodeAlign,
       shapeType,
       textFormat,
       textRegion,
@@ -2027,6 +2037,8 @@ export class CanvasController {
     c._barcodeUnit = { w: built.w, barH: built.barH, inkW: built.inkW }
     c._barcodeTextScale = k
     c._barcodeTextOffsetMm = 0
+    // 默认「靠左」= 左边缘固定向右长，与历史行为一致（用户可在属性面板改成居中/靠右）
+    c._barcodeAlign = 'left'
     // 记录渲染指纹：内容没变时 refreshAllContent 就不会再重建这个条码
     c._barcodeRendered = barcodeSignature(type, design, settings, 0)
     // 让新增条码的人读文字首帧就以「字号」清晰呈现（方正、不随组缩放被压小）
@@ -2318,12 +2330,17 @@ export class CanvasController {
         ky = k
       }
     }
+    // 对齐档位决定 `left` 的含义（锚点）：靠左=左边缘、居中=中心、靠右=右边缘。
+    // 直接沿用旧对象的 left ⇒ 锚点不动 ⇒ 内容变长时按用户选的方向扩展
+    // （Code128 数据多了不会一味向右长；靠右时它向左长、居中时两侧均分）。
+    const align: BarcodeAlign = oc._barcodeAlign ?? 'left'
     group.set({
       scaleX: kx,
       scaleY: ky,
       left: old.left,
       top: old.top,
       angle: old.angle ?? 0,
+      originX: align,
     })
     const nc = cf(group)
     nc.id = oc.id
@@ -2336,6 +2353,7 @@ export class CanvasController {
     nc._barcodeSettings = oc._barcodeSettings
     nc._barcodeUnit = { w: built.w, barH: built.barH, inkW: built.inkW }
     nc._barcodeTextOffsetMm = oc._barcodeTextOffsetMm || 0
+    nc._barcodeAlign = align
     // 记录本次渲染指纹，供 rerenderBarcode 判断「内容没变就别重建」
     nc._barcodeRendered = barcodeSignature(type, text, settings, nc._barcodeTextOffsetMm)
     // 重建后按「可读文字字号」刷新人读文字视觉：文字不随拉伸/改码制变化，仅字号生效
@@ -2504,6 +2522,39 @@ export class CanvasController {
     this.rerenderBarcode(obj)
     this.emitActive()
     this.events.onDirty()
+  }
+
+  /** 设置当前条码对象的「对齐 / 生长锚点」：内容变长条码变宽时以哪一侧为基准扩展 */
+  setBarcodeAlign(align: BarcodeAlign) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    const c = cf(obj)
+    if (!isBarcodeKind(c.kind)) return
+    if ((c._barcodeAlign ?? 'left') === align) return
+    c._barcodeAlign = align
+    this.setAlignOrigin(obj, align)
+    this.patchSerialize(obj)
+    this.canvas.requestRenderAll()
+    this.emitActive(obj)
+    this.events.onDirty()
+  }
+
+  /**
+   * 把对象的水平原点切到对齐档位，**保持当前视觉位置不动**。
+   *
+   * fabric 里 `left` 指的是「原点」的位置：originX='left' 时是左边缘、'center' 时是中心、
+   * 'right' 时是右边缘。所以换挡时必须把 left 补上两边原点偏移之差，否则对象会整体跳动
+   * （靠左→靠右会瞬间左移一整个宽度）。换挡后锚点即生效：之后内容变长、条码变宽时，
+   * 新的宽度按新原点展开 —— 靠右就是「右边缘钉住、向左长」。
+   *
+   * ⚠️ 用 `getScaledWidth()`（= width × scaleX）算偏移，不能用旋转后的包围盒宽度：
+   *    originX 的偏移是在**对象自身坐标轴**上量的，与旋转无关。
+   */
+  private setAlignOrigin(obj: fabric.Object, align: BarcodeAlign) {
+    const ratio = (o: string | undefined) => (o === 'center' ? 0.5 : o === 'right' ? 1 : 0)
+    const delta = (ratio(align) - ratio(obj.originX)) * obj.getScaledWidth()
+    obj.set({ originX: align, left: (obj.left ?? 0) + delta })
+    obj.setCoords()
   }
 
   /** 设置当前内容对象的前缀/后缀（纯文本，拼在内容前后） */
@@ -2915,6 +2966,8 @@ export class CanvasController {
         props._barcodeSettings = c._barcodeSettings
         if (c._barcodeUnit) props._barcodeUnit = c._barcodeUnit
         if (c._barcodeTextOffsetMm) props._barcodeTextOffsetMm = c._barcodeTextOffsetMm
+        // 对齐/生长锚点：非默认（靠左）才写，老模板读不到该字段时按 'left' 处理
+        if (c._barcodeAlign && c._barcodeAlign !== 'left') props._barcodeAlign = c._barcodeAlign
         if (typeof c._barcodeTextScale === 'number') props._barcodeTextScale = c._barcodeTextScale
         // 矢量条码组：模块矩形不写入 JSON（几百个对象太臃肿），载入时按元数据重建
         if (obj.type === 'group') delete (props as { objects?: unknown }).objects
@@ -3195,6 +3248,16 @@ export class CanvasController {
       c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number; inkW?: number } | undefined) ?? undefined
       c._barcodeTextScale = (s._barcodeTextScale as number | undefined) ?? undefined
       c._barcodeTextOffsetMm = (s._barcodeTextOffsetMm as number | undefined) ?? 0
+      // 对齐/生长锚点（老模板无此字段 → 'left'，行为与以前一致）
+      c._barcodeAlign = (s._barcodeAlign as BarcodeAlign | undefined) ?? 'left'
+      // ⚠️ originX 是**运行时**几何（不随 toJSON 的 left 自动还原到档位），必须显式同步：
+      //    否则存档重开后 _barcodeAlign='right' 但 originX 仍是 'left'，条码会整体左移一个宽度，
+      //    且之后改内容又变回「向右长」。这里**直接用 set 不补偿** —— 此时 left 来自 JSON，
+      //    本身就是按该 originX 存下来的值，补偿反而会二次偏移。
+      if (c._barcodeAlign !== 'left') {
+        o.set({ originX: c._barcodeAlign })
+        o.setCoords()
+      }
     }
     if (c.kind === 'text' && typeof s.originalText === 'string') {
       c.originalText = s.originalText

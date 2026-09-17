@@ -33,7 +33,7 @@ import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
 import type { PaperArea, PaperOrder, PaperSize, DataRow, ToolType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject } from '@/types/editor'
-import type { TextStyle, SerialSpec } from '@/types/editor'
+import type { TextStyle, SerialSpec, BarcodeAlign } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
 import TemplateLibrary from '@/sections/TemplateLibrary'
 import { buildTemplateSpec, type LibTemplate } from '@/lib/templateLibrary'
@@ -1013,6 +1013,19 @@ export default function App() {
       })
     }
   }, [])
+  // 条码对齐/生长锚点：靠左=向右长（历史行为）、居中=两侧均分、靠右=向左长
+  const onBarcodeAlignChange = useCallback((align: BarcodeAlign) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    try {
+      ctrl.setBarcodeAlign(align)
+    } catch (err) {
+      toast.error('条码对齐更新失败', {
+        description: err instanceof Error ? err.message : '请调整参数后重试',
+      })
+    }
+  }, [])
   const onContentDecorChange = useCallback((patch: { prefix?: string; suffix?: string }) => {
     const ctrl = ctrlRef.current
     if (!ctrl) return
@@ -1782,6 +1795,7 @@ export default function App() {
             onToggleLock={onToggleLock}
             onBarcodeSettingsChange={onBarcodeSettingsChange}
             onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
+            onBarcodeAlignChange={onBarcodeAlignChange}
             onContentDecorChange={onContentDecorChange}
             onSerialChange={onSerialChange}
             onDuplicate={onDuplicate}
@@ -1835,6 +1849,7 @@ export default function App() {
                 onToggleLock={onToggleLock}
                 onBarcodeSettingsChange={onBarcodeSettingsChange}
             onBarcodeTextOffsetChange={onBarcodeTextOffsetChange}
+            onBarcodeAlignChange={onBarcodeAlignChange}
                 onContentDecorChange={onContentDecorChange}
                 onSerialChange={onSerialChange}
                 onDuplicate={onDuplicate}
