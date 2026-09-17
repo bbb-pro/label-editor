@@ -43,8 +43,11 @@ interface CustomFields {
    * 上次构建条码时「未缩放」的条码条区几何（px）。
    * 人读文字字号变化只会改变 fullHeight（文字带），条区 barH 不变；
    * 用它做缩放换算基准，可保证调整字号时条码条尺寸恒定。
+   * `inkW` = 条码**墨迹宽**（左右静区之内，真正有黑条的横向跨度）。
+   * 静区默认 4px×2 且可调，`w` 是含静区的栅格宽 ⇒ 判断「文字会不会比条码还宽」
+   * 必须用 inkW（静区调大时才不会误判为「还有余量」）。
    */
-  _barcodeUnit?: { w: number; barH: number }
+  _barcodeUnit?: { w: number; barH: number; inkW?: number }
   /**
    * 人读文字在画布上的「绝对视觉缩放」（已含 group scale 的效果）。
    * 拉伸条码时保持它恒定 → 文字不随拉伸变化；只有改「可读文字字号」时才变。
@@ -128,6 +131,25 @@ const WORKSPACE_BG = '#e2e8f0'
  *  纯拉丁内容在 PDF 里会被映射成内置字体（矢量、免内嵌），中文走内嵌子集。 */
 const TEMPLATE_FONT = 'Arial'
 
+/**
+ * 含 CJK 的模板文本专用字体。
+ *
+ * 为什么不能统一用 Arial：Arial 没有中文字形，画布上会静默回退到系统默认中文字体
+ * （Windows 上是宋体），而 PDF 侧 `pdfFontFor` 对「拉丁字体 + 中文内容」会内嵌
+ * simhei 子集 → 预览是宋体、打印是黑体，且属性面板显示 Arial，三者互不相同。
+ * 这里按内容选字体：含 CJK 用 SimHei（黑体，与 PDF 内嵌字体同源），
+ * 纯拉丁仍用 Arial（PDF 走内置矢量字体），属性面板 → 画布 → 打印完全一致。
+ */
+const TEMPLATE_CJK_FONT = 'SimHei'
+
+/** 是否含 CJK / 日文假名 / 谚文 / 全角标点（这些字形 Arial 都没有） */
+const CJK_RE = /[\u2E80-\u9FFF\u3000-\u303F\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/
+
+/** 按内容挑模板字体（含 CJK → 黑体，否则 Arial） */
+function templateFontFor(text: string): string {
+  return CJK_RE.test(text) ? TEMPLATE_CJK_FONT : TEMPLATE_FONT
+}
+
 /** 取自定义字段读写器（类型断言，绕开 fabric 泛型 set） */
 function cf(o: fabric.Object): fabric.Object & CustomFields {
   return o as fabric.Object & CustomFields
@@ -139,10 +161,10 @@ function cf(o: fabric.Object): fabric.Object & CustomFields {
  * 所以宁可把框放宽一点。用 fabric.Text 而不是 Textbox：前者构造时就会
  * 算出自然宽度（= 不折行所需的最小宽度），后者按给定宽度折行。
  */
-function measureSingleLinePx(text: string, fontSizePx: number, bold: boolean): number {
+function measureSingleLinePx(text: string, fontSizePx: number, bold: boolean, fontFamily = TEMPLATE_FONT): number {
   const probe = new fabric.Text(text, {
     fontSize: fontSizePx,
-    fontFamily: TEMPLATE_FONT,
+    fontFamily,
     fontWeight: bold ? 'bold' : 'normal',
   })
   return probe.width ?? 0
@@ -1932,7 +1954,7 @@ export class CanvasController {
     c._barcodeTargetMm = targetMm
     c._barcodeType = type
     c._barcodeSettings = settings
-    c._barcodeUnit = { w: built.w, barH: built.barH }
+    c._barcodeUnit = { w: built.w, barH: built.barH, inkW: built.inkW }
     c._barcodeTextScale = k
     c._barcodeTextOffsetMm = 0
     // 记录渲染指纹：内容没变时 refreshAllContent 就不会再重建这个条码
@@ -1949,7 +1971,7 @@ export class CanvasController {
     text: string,
     settings: BarcodeRenderSettings,
     textOffsetMm = 0,
-  ): { group: fabric.Group; w: number; h: number; barH: number } | null {
+  ): { group: fabric.Group; w: number; h: number; barH: number; inkW: number } | null {
     try {
       // ⚠️ 「人读文字带」的几何一律按**基准字号**量取（= DEFAULT_BARCODE_SETTINGS.textSizePt），
       // 不跟随用户设置的字号 —— 否则 built.h 会随字号变，整组尺寸（含宽度）跟着变。
@@ -1973,6 +1995,11 @@ export class CanvasController {
           }),
       )
       let h = vec.height
+      // 条码**墨迹宽**：黑条左右两端的实际跨度（不含静区）。人读文字的宽度上限看它 ——
+      // 用含静区的 vec.width 会把「压进静区」误判成合法。
+      const inkX0 = vec.rects.reduce((m, r) => Math.min(m, r.x), Infinity)
+      const inkX1 = vec.rects.reduce((m, r) => Math.max(m, r.x + r.w), -Infinity)
+      const inkW = Number.isFinite(inkX0) && inkX1 > inkX0 ? inkX1 - inkX0 : vec.width
       const showText =
         vec.showTextHint && settings.showText !== false && !!vec.fullHeight && vec.fullHeight > vec.height
       if (showText && vec.fullHeight) {
@@ -1980,25 +2007,31 @@ export class CanvasController {
         h = vec.fullHeight
         // 文字 child 离条区下沿额外偏移(mm)：>0 拉开距离，<0 拉近
         const textOffsetPx = mmToPx(textOffsetMm || 0)
-        children.push(
-          new fabric.Text(text, {
-            left: vec.width / 2,
-            top: vec.height + band / 2 + textOffsetPx,
-            originX: 'center',
-            originY: 'center',
-            fontFamily: 'Arial',
-            // 下限只挡非法值（≥2）：旧值 6px 会在 band 变小后锁住文字大小，
-            // 导致「可读文字字号」调小时文字不再变化
-            fontSize: Math.max(2, band * 0.8),
-            fill: '#000000',
-            textAlign: 'center',
-            selectable: false,
-            evented: false,
-          }),
-        )
+        const txt = new fabric.Text(text, {
+          left: vec.width / 2,
+          top: vec.height + band / 2 + textOffsetPx,
+          originX: 'center',
+          originY: 'center',
+          fontFamily: 'Arial',
+          // 下限只挡非法值（≥2）：旧值 6px 会在 band 变小后锁住文字大小，
+          // 导致「可读文字字号」调小时文字不再变化
+          fontSize: Math.max(2, band * 0.8),
+          fill: '#000000',
+          textAlign: 'center',
+          selectable: false,
+          evented: false,
+        })
+        // ⚠️ 预缩：文案很长时「基准字号量出的文字」会比条区还宽，fabric 在构造 Group 时会把
+        //    这个宽度算进 group 的 bbox 并**冻结**。group bbox 是 PDF 导出的盒（box）来源 ——
+        //    被撑大 ⇒ 打印出来条码比预览更宽（预览 60mm、打印 82mm 这类「预览/打印不一致」）。
+        //    这里先按条区宽压一次，使 bbox 恒等于条区；真正的文字大小随后仍由
+        //    applyBarcodeTextCompensation 按「可读文字字号 + 宽度上限」重算。
+        const txtW = txt.width ?? 0
+        if (inkW > 1 && txtW > inkW) txt.set({ scaleX: inkW / txtW, scaleY: inkW / txtW })
+        children.push(txt)
       }
       const group = new fabric.Group(children, { subTargetCheck: false })
-      return { group, w: vec.width, h, barH: vec.height }
+      return { group, w: vec.width, h, barH: vec.height, inkW }
     } catch {
       return null
     }
@@ -2049,9 +2082,13 @@ export class CanvasController {
    * scaleX = glyphPx/(fontSize·sx)、scaleY = glyphPx/(fontSize·sy)，则其
    * 在画布上的视觉字号 = fontSize×childScale×groupScale = glyphPx：
    *  - 与 group 拉伸（sx/sy）无关 → 拉伸/缩放条码时文字字号恒定、字形方正（不拉扁）；
-   *  - glyphPx 严格等于 ptToPx(textSizePt)，**不再按文字带可用空间封顶**。
-   *    旧实现有 capPx 封顶：把条码缩到 0.2× 时 12px 的字被压成 8.2px（用户报过
-   *    「拉伸缩放改变了字体大小」）。现在字号是「绝对量」：改字号只改文字，缩放只改代码。
+   *  - glyphPx 以 ptToPx(textSizePt) 为**目标值**，再受「条区宽度」上限约束：
+   *    ⭐ 文字可视宽 = 实测文字宽 × childScale × 组缩放 = (k.width/fs) × glyphPx，
+   *    故「可视宽 ≤ 条区可视宽」等价于 glyphPx ≤ 条区可视宽 / (k.width/fs)。
+   *    于是：① 把字号调大，超过条码宽度后就不再变宽（被宽度钳住）；
+   *          ② 把条码拉窄，宽度上限同步变小，文字自动缩号（不会戳出条码两侧）。
+   *    旧实现有 capPx 按**文字带高度**封顶：把条码缩到 0.2× 时 12px 的字被压成 8.2px
+   *    （用户报过「拉伸缩放改变了字体大小」）。现在封顶只按**宽度**，与拉伸解耦。
    *
    * 文字带按**基准字号**预留空间（见 buildBarcodeGroup），故字号设得很大时文字会略微
    * 溢出文字带 —— 这是「字号/尺寸彻底解耦」的必然结果：需要更大边距就把条码整体拉高，
@@ -2076,14 +2113,52 @@ export class CanvasController {
     if (!Array.isArray(kids)) return
     const c = cf(obj)
     const textPt = Math.max(1, c._barcodeSettings?.textSizePt ?? 9)
-    const glyphPx = ptToPx(textPt)
+    const wantPx = ptToPx(textPt)
     c._barcodeTextScale = Math.min(sx, sy) // 保留字段(兼容旧模板读取/序列化)；不再驱动字号
+    // 条区可视宽度(px) —— 人读文字可视宽度的上限
+    const barPx = this.barcodeBarVisualWidth(obj, kids, sx)
     for (const k of kids) {
       // 只处理人读文字（条码条是 rect，保持随拉伸变化）
       if (k.type !== 'text' && k.type !== 'textbox' && k.type !== 'i-text') continue
       const fs = Math.max((k as fabric.Text).fontSize ?? 1, 1)
+      let glyphPx = wantPx
+      // 「单位字号的可视宽」= 实测字宽 / 字号（与字号成正比，故与 fs 取值无关）
+      const perPx = ((k as fabric.Text).width ?? 0) / fs
+      if (barPx > 0 && perPx > 0) {
+        const cap = barPx / perPx
+        if (cap < glyphPx) glyphPx = cap
+      }
+      // 兜底：条码窄到极限时也别把字号压成 0（否则文字直接消失，用户会以为出 bug）
+      if (glyphPx < 1) glyphPx = 1
       k.set({ scaleX: glyphPx / (fs * sx), scaleY: glyphPx / (fs * sy) })
     }
+  }
+
+  /**
+   * 条码条区的「可视宽度」(px) —— 人读文字宽度的上限。
+   * 优先直接量组内黑条矩形（rect）的横向跨度：最可靠，且不会被文字自己撑大的 group bbox 误导。
+   * 量不出（老模板 / 组内结构异常）时按 _barcodeUnit.inkW → w → group.width 逐级兜底。
+   */
+  private barcodeBarVisualWidth(obj: fabric.Object, kids: fabric.Object[], sx: number): number {
+    let x0 = Infinity
+    let x1 = -Infinity
+    for (const k of kids) {
+      if (k.type !== 'rect') continue
+      const l = k.left ?? 0
+      const w = (k.width ?? 0) * Math.abs(k.scaleX ?? 1)
+      if (l < x0) x0 = l
+      if (l + w > x1) x1 = l + w
+    }
+    const unit = cf(obj)._barcodeUnit
+    const local =
+      x1 > x0
+        ? x1 - x0
+        : unit?.inkW && unit.inkW > 0
+          ? unit.inkW
+          : unit?.w && unit.w > 0
+            ? unit.w
+            : Math.abs(obj.width ?? 0)
+    return local * sx
   }
 
   private replaceBarcodeObject(
@@ -2189,7 +2264,7 @@ export class CanvasController {
     nc._barcodeType = oc._barcodeType
     nc._barcodeTargetMm = oc._barcodeTargetMm
     nc._barcodeSettings = oc._barcodeSettings
-    nc._barcodeUnit = { w: built.w, barH: built.barH }
+    nc._barcodeUnit = { w: built.w, barH: built.barH, inkW: built.inkW }
     nc._barcodeTextOffsetMm = oc._barcodeTextOffsetMm || 0
     // 记录本次渲染指纹，供 rerenderBarcode 判断「内容没变就别重建」
     nc._barcodeRendered = barcodeSignature(type, text, settings, nc._barcodeTextOffsetMm)
@@ -3047,7 +3122,7 @@ export class CanvasController {
       c._barcodeType = (s._barcodeType as BarcodeType) ?? 'code128'
       c._barcodeTargetMm = (s._barcodeTargetMm as number) ?? undefined
       c._barcodeSettings = (s._barcodeSettings as BarcodeRenderSettings) ?? undefined
-      c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number } | undefined) ?? undefined
+      c._barcodeUnit = (s._barcodeUnit as { w: number; barH: number; inkW?: number } | undefined) ?? undefined
       c._barcodeTextScale = (s._barcodeTextScale as number | undefined) ?? undefined
       c._barcodeTextOffsetMm = (s._barcodeTextOffsetMm as number | undefined) ?? 0
     }
@@ -3217,7 +3292,9 @@ export class CanvasController {
         let fsPx = ptToPx(n.fontSizePt)
         let boxFinal = boxW
         let topAdj = 0
-        const natural = measureSingleLinePx(n.text, fsPx, n.bold)
+        // 字体按内容选：中文用黑体（与 PDF 内嵌 simhei 同源），纯拉丁用 Arial
+        const font = templateFontFor(n.text)
+        const natural = measureSingleLinePx(n.text, fsPx, n.bold, font)
         const wanted = natural * 1.02 + 2
         if (wanted > boxW) {
           const avail = availableBoxWidth(
@@ -3248,7 +3325,7 @@ export class CanvasController {
           top: topBase + topAdj,
           width: boxFinal,
           fontSize: fsPx,
-          fontFamily: TEMPLATE_FONT,
+          fontFamily: font,
           fontWeight: n.bold ? 'bold' : 'normal',
           fill: '#000000',
           originX: 'left',
@@ -3288,46 +3365,72 @@ export class CanvasController {
   }
 
   /**
-   * 在模板给定的盒子里放下一个条码/二维码：
-   * 等比缩放到「恰好装进盒子」，宽度有富余时水平居中。返回条码组（未加入画布）。
+   * 在模板给定的盒子里放下一个条码/二维码。
+   * - 2D（二维码）：必须等比（否则扫不出来），按 min(盒宽/码宽, 盒高/码高) 缩放并水平居中；
+   * - 1D：按框**拉伸填满** —— 原站把条码当「可拉伸的框」用（x/y/w/h 即元素的框），
+   *   等比缩放会让它只占盒子的一小块（实测「货架位置标签」76mm 的框里条码仅 8mm 宽），
+   *   与设计稿不符。横向拉伸不改变模块间的相对宽度，仍可正常扫描。
+   * 返回条码组（未加入画布）。
    */
   private buildBarcodeInto(
     n: TplBarcodeNode,
     ox: number,
     oy: number,
   ): fabric.Group | null {
-    const settings = defaultSettingsFor(n.barcodeType)
-    const built = this.buildBarcodeGroup(n.barcodeType, n.text, settings)
+    let type = n.barcodeType
+    let settings = defaultSettingsFor(type)
+    let built = this.buildBarcodeGroup(type, n.text, settings)
+    // 兜底：内容不符合该码制时（零售码位数/校验位不合规、含该码制不支持的字符…）
+    // 退回 code128 渲染，保证「模板上有条码的位置一定有码」，而不是整块留白。
+    // 属性面板会显示实际的码制，用户可自行改回。
+    if (!built && type !== 'code128') {
+      type = 'code128'
+      settings = defaultSettingsFor(type)
+      built = this.buildBarcodeGroup(type, n.text, settings)
+    }
     if (!built) return null
-    const { group, w, h, barH } = built
+    const { group, w, h, barH, inkW } = built
     const boxW = mmToPx(n.wMm)
     const boxH = mmToPx(n.hMm)
-    const raw = Math.min(boxW / (w || 1), boxH / (h || 1))
-    const scale = Number.isFinite(raw) && raw > 0 ? raw : 1
+    const is2d = is2dType(type)
+    let sx: number
+    let sy: number
+    if (is2d) {
+      const k = Math.min(boxW / (w || 1), boxH / (h || 1))
+      sx = sy = Number.isFinite(k) && k > 0 ? k : 1
+    } else {
+      const vx = boxW / (w || 1)
+      const vy = boxH / (h || 1)
+      sx = Number.isFinite(vx) && vx > 0 ? vx : 1
+      sy = Number.isFinite(vy) && vy > 0 ? vy : 1
+    }
     // 一维码：人读文字的字号是「绝对量」（不随拉伸/缩放变化），所以模板必须**一次性**定好合适的 pt，
     // 否则默认 9pt 会远大于这个小盒子里的文字带（模板里的小条码会被文字盖住）。
     // 按「文字带在设计比例下可容纳的字号」反算 pt —— 只在载入时算一次，
     // 之后「改字号」与「改尺寸」互不影响（这是解耦后的既定行为）。
-    if (!is2dType(n.barcodeType)) {
+    if (!is2d) {
       const bandUnit = h - barH
       if (bandUnit > 1) {
-        settings.textSizePt = Math.max(4, Math.min(48, Math.round(pxToPt(bandUnit * scale * 0.8))))
+        settings.textSizePt = Math.max(4, Math.min(48, Math.round(pxToPt(bandUnit * sy * 0.8))))
       }
     }
-    group.set({ scaleX: scale, scaleY: scale })
+    group.set({ scaleX: sx, scaleY: sy })
 
     const c = cf(group)
-    c._barcodeType = n.barcodeType
+    c._barcodeType = type
     c._barcodeSettings = settings
-    c._barcodeUnit = { w, barH }
+    c._barcodeUnit = { w, barH, inkW }
     c._barcodeTextOffsetMm = 0
-    c._barcodeTargetMm = roundMm(pxToMm((is2dType(n.barcodeType) ? Math.max(w, h) : barH) * scale))
+    c._barcodeTargetMm = roundMm(pxToMm(is2d ? Math.max(w, h) * sx : barH * sy))
     // 供 refreshAllContent 判断"内容没变就不用重建"
-    c._barcodeRendered = barcodeSignature(n.barcodeType, n.text, settings, 0)
+    c._barcodeRendered = barcodeSignature(type, n.text, settings, 0)
     // 一维码：人读文字按 pt 定标，避免被整组缩放压小
-    if (!is2dType(n.barcodeType)) this.applyBarcodeTextCompensation(group)
+    if (!is2d) this.applyBarcodeTextCompensation(group)
 
-    group.set({ left: ox + mmToPx(n.xMm) + Math.max(0, (boxW - w * scale) / 2), top: oy + mmToPx(n.yMm) })
+    group.set({
+      left: ox + mmToPx(n.xMm) + (is2d ? Math.max(0, (boxW - w * sx) / 2) : 0),
+      top: oy + mmToPx(n.yMm),
+    })
     return group
   }
 

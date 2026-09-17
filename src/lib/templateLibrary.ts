@@ -972,6 +972,39 @@ function toBarcodeType(raw: string): BarcodeType {
 }
 
 /**
+ * GS1 模 10 校验位（EAN-13 / UPC-A 通用）：从右往左交替 3/1 加权。
+ * @param data 校验位之前的数字串（EAN-13 → 12 位；UPC-A → 11 位）
+ */
+function gs1CheckDigit(data: string): number {
+  let sum = 0
+  for (let i = 0; i < data.length; i++) {
+    const d = data.charCodeAt(data.length - 1 - i) - 48
+    sum += i % 2 === 0 ? d * 3 : d
+  }
+  return (10 - (sum % 10)) % 10
+}
+
+/**
+ * 零售码（EAN-13 / UPC-A）的**校验位修正**。
+ *
+ * 原站模板里的零售码是设计稿的示例数字，末位校验位并不满足 GS1 模 10 校验，
+ * 而 bwip-js 会**直接拒绝**渲染校验位错误的 EAN-13 —— 表现为整条码不出现：
+ * 实测「果汁饮料标签 / 营养成分标签 / 药品包装标签」三个模板的条码完全消失，
+ * 「服装吊牌」也只剩一个二维码。
+ *
+ * 校验位只用于防错（与图案无关），这里按前 N-1 位重算末位，让模板能正常出码。
+ * 仅当内容是「纯数字 + 位数正确」时才动手，其余情况（含字母、位数不符）原样返回，
+ * 交给渲染层按原有逻辑处理。
+ */
+function fixRetailCheckDigit(type: BarcodeType, content: string): string {
+  const need = type === 'ean13' ? 13 : type === 'upca' ? 12 : 0
+  if (!need || content.length !== need || !/^\d+$/.test(content)) return content
+  const head = content.slice(0, need - 1)
+  const check = gs1CheckDigit(head)
+  return check === content.charCodeAt(need - 1) - 48 ? content : head + String(check)
+}
+
+/**
  * 文本框的垂直定位：原站把文字放在 (y, height) 的块里，
  * 该块高度通常略大于字号 → 这里按「块内垂直居中」还原，避免与设计稿错位。
  */
@@ -1056,17 +1089,20 @@ export function buildTemplateSpec(tpl: LibTemplate, now: Date = new Date()): Tem
           align: ALIGN[e.textAlign ?? 0] ?? 'left',
         })
         break
-      case 'barcode':
+      case 'barcode': {
+        const barType = toBarcodeType(e.barcodeType)
         nodes.push({
           kind: 'barcode',
           xMm: tk2mm(e.x),
           yMm: tk2mm(e.y),
           wMm: tk2mm(e.width),
           hMm: tk2mm(e.height),
-          barcodeType: toBarcodeType(e.barcodeType),
-          text: e.content,
+          barcodeType: barType,
+          // 零售码的示例数字末位校验位常常不合规（bwip-js 会拒绝渲染）→ 载入时补齐
+          text: fixRetailCheckDigit(barType, e.content),
         })
         break
+      }
       case 'qrcode':
         nodes.push({
           kind: 'barcode',

@@ -70,6 +70,24 @@ function pdfFontFor(obj: fabric.Object, content: string): string {
   return FONT_ALIAS
 }
 
+/** 条码组里的「人读文字」child（只有一维码有） */
+function hrtTextChild(o: fabric.Object): fabric.Object | null {
+  const kids = (o as unknown as { _objects?: fabric.Object[] })._objects
+  if (!Array.isArray(kids)) return null
+  return kids.find((k) => k.type === 'text' || k.type === 'textbox' || k.type === 'i-text') ?? null
+}
+
+/**
+ * 取某个叶子对象在 PDF 里**实际使用**的字体。
+ * ⚠️ 条码必须看它的「人读文字 child」：fabric.Group 自身没有 fontFamily，直接取会判成
+ *    「非拉丁字体」→ 走内嵌中文字体画数字/字母 —— 与画布 Arial 的字形、字宽都不一致，
+ *    还会让 PDF 的体积无谓变大（子集里塞进一堆用不到的字符）。
+ */
+function leafFontFor(o: fabric.Object, content: string): string {
+  const kind = (o as unknown as { kind?: string }).kind
+  return pdfFontFor(kind === 'barcode' ? (hrtTextChild(o) ?? o) : o, content)
+}
+
 export interface VectorPdfOptions {
   copies?: number
   name?: string
@@ -227,6 +245,24 @@ function leafBox(o: Leaf): Box {
     cy: pxToMm(top + rect.height / 2),
     angleDeg,
   }
+}
+
+/**
+ * 对象「含父容器」的累计缩放：编组 / 多选（ActiveSelection）里的子对象保留的是
+ * 父容器内的局部坐标，其 scaleX/scaleY 也只是相对父容器的，必须沿 group 链累乘，
+ * 否则「缩放整个编组」时内部条码的换算比例会漏掉父级缩放。
+ */
+function totalScaleOf(o: Leaf): { x: number; y: number } {
+  let x = o.scaleX ?? 1
+  let y = o.scaleY ?? 1
+  let p = (o as unknown as { group?: fabric.Object | null }).group ?? null
+  let depth = 0
+  while (p && depth++ < 16) {
+    x *= p.scaleX ?? 1
+    y *= p.scaleY ?? 1
+    p = (p as unknown as { group?: fabric.Object | null }).group ?? null
+  }
+  return { x, y }
 }
 
 function rot(cx: number, cy: number, x: number, y: number, deg: number): [number, number] {
@@ -636,6 +672,7 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
     _barcodeType?: BarcodeType
     _barcodeSettings?: Partial<BarcodeRenderSettings>
     _barcodeTextOffsetMm?: number
+    _barcodeUnit?: { w: number; barH: number; inkW?: number }
   }
   const type: BarcodeType = c._barcodeType ?? 'code128'
   const rawText = ctrl.contentStringFor(o) || ' '
@@ -658,19 +695,34 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
 
   // 一维码含人读文字：盒的高度 = 条区 + 文字条带。以「含文字整体高」为基准划分。
   const fullH = showText && vec.fullHeight ? vec.fullHeight : vec.height
-  // 统一按“宽”定 px→mm 比例（条/字区宽度一致；盒宽本就对应 raster 宽，保留静区不变形）
-  const k = box.w / vec.width
-  // 条区高度(mm) → 条区占上、文字占下，用盒高均摊保证填满且不越界
-  const scaleToBox = box.h / (fullH * k) // 若 on-canvas 高度与 width 比例非精确 1:1 时的补偿
-  const kFinal = k * scaleToBox
-  const barHmmF = vec.height * kFinal
-  const ox = box.left + (box.w - vec.width * kFinal) / 2
-  const oy = box.top // 条区从盒顶开始（raster 顶部含上静区）
+
+  // ⚠️ 水平与垂直**必须分开换算**。
+  //    旧写法把两轴揉成一个比例：kFinal = k × (box.h / (fullH × k)) ≡ box.h / fullH
+  //    —— 与盒宽完全无关！于是「横向拉伸条码」（画布上把条码拉满设计框的常规操作）
+  //    在 PDF 里被整个丢掉，打印出来仍是原始宽度（用户报「拉伸之后打印还是原来默认的样子」）。
+  //
+  //    横向：贴合「内容外框」（box 已是画布上的真实外框，与静区/栅格口径无关）。
+  //    纵向：有 _barcodeUnit 时用「栅格 px → mm」的真实比例 —— 画布上 1 个栅格 px 被缩放了
+  //         |scale| 个画布 px，而画布 px → mm 就是 pxToMm，因此与画布逐像素同源、非等比拉伸
+  //         也原样保留；口径明显不符（条区比整盒还高）时退回「整体高贴合」。
+  const inkX0 = vec.rects.reduce((m, r) => Math.min(m, r.x), Infinity)
+  const inkX1 = vec.rects.reduce((m, r) => Math.max(m, r.x + r.w), -Infinity)
+  const inkY0 = vec.rects.reduce((m, r) => Math.min(m, r.y), Infinity)
+  const unit = c._barcodeUnit
+  const ts = totalScaleOf(o)
+  const kx = box.w / Math.max(1e-6, inkX1 - inkX0)
+  const kyFit = box.h / (fullH || vec.height)
+  let ky = unit && unit.barH > 0 && Math.abs(ts.y) > 1e-6 ? pxToMm(Math.abs(ts.y)) : kyFit
+  if (!(vec.height * ky <= box.h + 0.01)) ky = kyFit
+  // 栅格原点（世界 mm）：由内容外框反推（box 是轴对齐包围盒，旋转对象按原逻辑不参与）
+  const rx = box.left - inkX0 * kx
+  const ry = box.top - inkY0 * ky
+  const barHmmF = vec.height * ky
 
   // 黑色矢量块
   doc.setFillColor(0, 0, 0)
   for (const r of vec.rects) {
-    doc.rect(n(ox + r.x * kFinal), n(oy + r.y * kFinal), n(r.w * kFinal), n(r.h * kFinal), 'F')
+    doc.rect(n(rx + r.x * kx), n(ry + r.y * ky), n(r.w * kx), n(r.h * ky), 'F')
   }
 
   // 一维码人读文字：画在条区下方、盒内的文字条带，水平居中
@@ -683,14 +735,23 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
       //    画布的人读文字是「绝对字号」（拉伸/缩放不改字号），旧写法
       //    `min(textPt, textBandH*72/25.4*0.72)` 会让 PDF 的字号只由条码高度决定
       //    （实测 9pt/20pt 都被压成 8.36pt），与预览不一致。
-      const fontSizePt = Math.max(1, textPt)
+      let fontSizePt = Math.max(1, textPt)
       const textOffsetMm = c._barcodeTextOffsetMm ?? 0
-      // 文字带中心 + 额外偏移（mm）：>0 把文字往下推拉开与条区距离，<0 拉近
-      const cy = box.top + barHmmF + textBandH / 2 + textOffsetMm
-      // 人读文字跟随该条码对象的字体：纯拉丁内容走内置字体，其余内嵌子集
-      const barFont = pdfFontFor(o as unknown as fabric.Object, rawText)
+      // 人读文字跟随该条码对象的字体（取人读文字 child 的 fontFamily）：纯拉丁内容走内置字体，其余内嵌子集
+      const barFont = leafFontFor(o, rawText)
       doc.setFont(barFont)
       doc.setFontSize(fontSizePt)
+      // ⚠️ 与画布同口径的**宽度上限**：人读文字宽度不得超过条区宽度（box.w）。
+      //    画布侧在 applyBarcodeTextCompensation 里按「实测字宽 / 条区可视宽」压字号，
+      //    这里用同一判据（jsPDF 实测文本宽 vs box.w）等比压回去，
+      //    否则「内容很长 + 条码很窄」时 PDF 的文字会横向戳出条码（预览/打印不一致）。
+      const textWmm = doc.getTextWidth(rawText)
+      if (textWmm > 0 && box.w > 0 && textWmm > box.w) {
+        fontSizePt = Math.max(1, (fontSizePt * box.w) / textWmm)
+        doc.setFontSize(fontSizePt)
+      }
+      // 文字带中心 + 额外偏移（mm）：>0 把文字往下推拉开与条区距离，<0 拉近
+      const cy = box.top + barHmmF + textBandH / 2 + textOffsetMm
       doc.text(rawText, n(box.left + box.w / 2), n(cy + (fontSizePt / 72) * 25.4 * 0.35), { align: 'center' })
     }
   }
@@ -755,7 +816,7 @@ function pageChars(ctrl: CanvasController): string {
     if (kind !== 'text' && kind !== 'barcode') continue
     const content = ctrl.contentStringFor(o)
     if (!content) continue
-    if (pdfFontFor(o, content) === FONT_ALIAS) parts.push(content)
+    if (leafFontFor(o, content) === FONT_ALIAS) parts.push(content)
   }
   return parts.join('\n')
 }
