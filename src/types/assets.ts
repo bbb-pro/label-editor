@@ -21,6 +21,12 @@ export interface AssetItem {
    * 缺省按 'line' 处理。
    */
   fillStyle?: 'line' | 'filled'
+  /**
+   * 可选：素材自带的坐标系，缺省 `0 0 24 24`。
+   * GHS 象形图与官方 CE 模型的原始 viewBox 各不相同（579/735/5790/840×600…），
+   * 套壳时必须用它，否则图形会被拉伸变形。
+   */
+  viewBox?: string
   /** 可选：emoji 原字符，用于面板内以系统字体快速预览 */
   preview?: string
 }

@@ -53,9 +53,8 @@ export default function AssetsPanel({ open, onClose, onInsert }: AssetsPanelProp
       setLoading(true)
       setError(null)
       try {
-        const [lucide, emoji] = await Promise.all([loadLucideSet(), loadEmojiSet()])
+        const [lucide, emoji, marks] = await Promise.all([loadLucideSet(), loadEmojiSet(), loadMarksSet()])
         const symbols = loadSymbolsSet()
-        const marks = loadMarksSet()
         if (!alive) return
         setItems([...marks.items, ...symbols.items, ...lucide.items, ...emoji.items])
         setLicenses([lucide.license, symbols.license, marks.license, emoji.license])

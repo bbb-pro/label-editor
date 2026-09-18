@@ -9,12 +9,9 @@ import { ZH, CAT_RULES, DEFAULT_CAT, TRANSPORT_CAT, categorizeLucide } from '@/l
 import { SYMBOLS } from '@/lib/assetSymbols'
 import { MARKS, MARK_CATS } from '@/lib/assetMarks'
 
-/** Lucide / 储运标志共用的线稿套壳：颜色与线宽在取用时替换 */
-const STROKE_WRAP = (viewBox: number, inner: string, color: string, strokeWidth: number) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBox} ${viewBox}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`
-
-/** Lucide 默认线稿样式。这里的颜色会在每次取用时被替换为目标色 */
-const LUCIDE_WRAP = (inner: string, color: string, strokeWidth = 2) => STROKE_WRAP(24, inner, color, strokeWidth)
+/** 线稿套壳：颜色与线宽在取用时替换。viewBox 逐项传入（各素材坐标系不同） */
+const STROKE_WRAP = (viewBox: string, inner: string, color: string, strokeWidth: number) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`
 
 const EMOJI_WRAP = (inner: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36">${inner}</svg>`
@@ -37,6 +34,8 @@ async function fetchAssetJson(url: string): Promise<unknown> {
 
 const LUCIDE_URL = `${import.meta.env.BASE_URL}assets/icons-lucide.json`
 const EMOJI_URL = `${import.meta.env.BASE_URL}assets/emoji-twemoji.json`
+/** UN GHS 危险品九类象形图（由 scripts/build-ghs-marks.mjs 生成） */
+const GHS_MARKS_URL = `${import.meta.env.BASE_URL}assets/marks-ghs.json`
 
 /**
  * 加载 Lucide 图标集合。
@@ -106,11 +105,23 @@ export function loadSymbolsSet(): { items: AssetItem[]; license: string } {
 }
 
 /**
- * 标准合规标志集合（GHS 危险品 / 洗涤护理 / 回收环保 / 认证标识）：静态内联，无需 fetch。
- * 'filled' 类内含固有配色（GHS 红菱形、能效彩条），换色无意义，取用时原样输出。
+ * 标准合规标志集合。
+ *
+ * - **UN GHS 危险品九类**：运行时 fetch（约 40KB 矢量路径），与 lucide / emoji 同一套做法，
+ *   图形为 UN GHS 标准象形图，由 scripts/build-ghs-marks.mjs 从 MIT 许可的 npm 包抽取。
+ * - **CE / ISO 3758 洗涤 / 回收 / 认证**：静态内联（体积极小）。
+ *   CE 几何取自欧盟委员会官方矢量模型，'filled' 类原样输出不改色。
  */
-export function loadMarksSet(): { items: AssetItem[]; license: string } {
-  const items: AssetItem[] = MARKS.map(([id, name, keywords, cat, style, inner]) => ({
+export async function loadMarksSet(): Promise<{ items: AssetItem[]; license: string }> {
+  const toItem = (
+    id: string,
+    name: string,
+    keywords: string,
+    cat: string,
+    style: AssetItem['fillStyle'],
+    inner: string,
+    viewBox?: string,
+  ): AssetItem => ({
     id: `mark:${id}`,
     name,
     search: `${name} ${keywords}`.toLowerCase(),
@@ -118,25 +129,52 @@ export function loadMarksSet(): { items: AssetItem[]; license: string } {
     cat,
     inner,
     fillStyle: style,
-  }))
-  return { items, license: '标准合规标志 · 自绘（GHS / ISO 3758 / 回收 / 认证 语义）' }
+    viewBox,
+  })
+
+  let ghs: AssetItem[] = []
+  let ghsLicense = ''
+  try {
+    const lib = (await fetchAssetJson(GHS_MARKS_URL)) as {
+      meta: { source?: string; license?: string }
+      marks: [string, string, string, string, string][]
+    }
+    ghs = lib.marks.map(([id, name, kw, viewBox, inner]) =>
+      toItem(id, name, kw, 'ghs', 'filled', inner, viewBox),
+    )
+    ghsLicense = `GHS 危险品标示 · ${lib.meta?.source ?? 'UN GHS'} · ${lib.meta?.license ?? 'MIT'}`
+  } catch {
+    // GHS 数据缺失不应连累整个素材面板：其余标志照常可用
+  }
+
+  const selfDrawn = MARKS.map(([id, name, keywords, cat, style, inner, viewBox]) =>
+    toItem(id, name, keywords, cat, style, inner, viewBox),
+  )
+
+  return {
+    items: [...ghs, ...selfDrawn],
+    license: ['标准合规标志 · CE 用欧盟官方几何 · 其余自绘（ISO 3758 / 回收 / 认证）', ghsLicense]
+      .filter(Boolean)
+      .join(' · '),
+  }
 }
 
-/** 含固有配色的素材（GHS 红菱形、能效彩条）原样输出，不覆盖颜色与线宽 */
-const PLAIN_WRAP = (viewBox: number, inner: string) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBox} ${viewBox}">${inner}</svg>`
+/** 含固有配色的素材（GHS 红菱形、CE 黑字、能效彩条）原样输出，不覆盖颜色与线宽 */
+const PLAIN_WRAP = (viewBox: string, inner: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${inner}</svg>`
 
 /** 把素材渲染为完整 SVG 字符串（线稿类支持换色） */
 export function assetToSvg(item: AssetItem, color = '#000000', strokeWidth = 2): string {
+  const vb = item.viewBox ?? (item.set === 'emoji' ? '0 0 36 36' : '0 0 24 24')
   if (item.set === 'emoji') return EMOJI_WRAP(item.inner)
   if (item.set === 'marks') {
     // 合规标志：filled 自带配色；line 用略粗线稿（合规符号普遍比 UI 图标描边重）
     return item.fillStyle === 'filled'
-      ? PLAIN_WRAP(24, item.inner)
-      : STROKE_WRAP(24, item.inner, color, 1.6)
+      ? PLAIN_WRAP(vb, item.inner)
+      : STROKE_WRAP(vb, item.inner, color, 1.6)
   }
-  if (item.set === 'symbols') return STROKE_WRAP(24, item.inner, color, 1.5)
-  return LUCIDE_WRAP(item.inner, color, strokeWidth)
+  if (item.set === 'symbols') return STROKE_WRAP(vb, item.inner, color, 1.5)
+  return STROKE_WRAP(vb, item.inner, color, strokeWidth)
 }
 
 /** 生成用于 <img> 预览的 data URI */

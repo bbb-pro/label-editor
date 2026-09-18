@@ -1119,9 +1119,12 @@ export default function App() {
     // 合规标志里 'filled' 类（GHS 红菱形、能效等级彩条）自带固有配色：
     // 不能套线稿壳去改色，否则红框 / 彩条会被统一涂成单色而失去含义。
     const isFilled = item.fillStyle === 'filled'
+    // 每个素材自带坐标系：GHS 象形图 579 / 735 / 5790，官方 CE 模型 840×600，
+    // emoji 36，其余 24。套错 viewBox 会把图形拉伸变形，必须逐项传。
+    const viewBox = item.viewBox ?? (item.set === 'emoji' ? '0 0 36 36' : '0 0 24 24')
     const ok = await ctrl.addSvgAsset({
       inner: item.inner,
-      viewBox: item.set === 'emoji' ? '0 0 36 36' : '0 0 24 24',
+      viewBox,
       isStroke: item.set !== 'emoji' && !isFilled,
       color: '#111827',
       strokeWidth: item.set === 'marks' ? 1.6 : item.set === 'symbols' ? 1.5 : 2,
