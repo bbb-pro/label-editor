@@ -30,6 +30,11 @@ const overrides = overridesPath && fs.existsSync(overridesPath)
   : {}
 
 fs.mkdirSync(path.join(outDir, 'raster'), { recursive: true })
+// 先清空旧的位图产物：改名规则一变（如从「原名替换下划线」改成序号），
+// 不清就会留下旧文件，既占体积又让人分不清哪份才是当前数据引用的。
+for (const f of fs.readdirSync(path.join(outDir, 'raster'))) {
+  fs.unlinkSync(path.join(outDir, 'raster', f))
+}
 
 const localName = (image) => {
   const parts = image.split('/').filter(Boolean)
@@ -172,8 +177,11 @@ for (const [cat, list] of byCat) {
       catItems.push([id, name, kw, norm.style, norm.viewBox, norm.inner])
     } else if (ext === '.png' || ext === '.jpg' || ext === '.jpeg') {
       const buf = fs.readFileSync(fp)
-      // 位图：只存相对路径，fabric.Image 自己按 URL 取
-      const destName = `${catId}-${short.replace(/[^\w.-]/g, '_')}${ext}`
+      // 位图：只存相对路径，fabric.Image 自己按 URL 取。
+      // ⚠️ 落盘名必须用**分类内序号**，不能拿原名去「非 ASCII 字符替换成下划线」——
+      // 那样「不可漂白 / 不可水洗 / 不可熨烫」会被压成同一串下划线而互相覆盖，
+      // 实测 436 个位图曾压成 328 个文件、108 个素材指到了别人的图。
+      const destName = `${catId}-${String(catItems.length + 1).padStart(3, '0')}${ext}`
       fs.writeFileSync(path.join(outDir, 'raster', destName), buf)
       const isPng = ext === '.png'
       const w = isPng ? buf.readUInt32BE(16) : 0
