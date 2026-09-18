@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>42 种条码与二维码怎么选？Code128 / Code39 / QR / DataMatrix 选型指南</title>
+    <meta
+      name="description"
+      content="一张表讲清 42 种条码二维码怎么选：Code128 与 Code39 的区别、EAN-13 适用零售、GS1-128 用于物流单元、QR 与 DataMatrix 密度对比，以及扫码枪扫不出的常见原因与解决办法。"
+    />
+    <meta
+      name="keywords"
+      content="条码类型选择,Code128,Code39,EAN-13,GS1-128,QR Code,DataMatrix,PDF417,一维码,二维码,条码扫不出来,静区"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://057300.xyz/guide/barcode-types.html" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="标签编辑器" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:url" content="https://057300.xyz/guide/barcode-types.html" />
+    <meta property="og:title" content="42 种条码与二维码怎么选？" />
+    <meta
+      property="og:description"
+      content="Code128 与 Code39 的区别、EAN-13 适用零售、GS1-128 用于物流单元、QR 与 DataMatrix 密度对比，附扫码失败排查。"
+    />
+    <meta property="og:image" content="https://057300.xyz/og-image.png" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="gh">
+      <a class="gh-brand" href="/">标签编辑器</a>
+      <nav>
+        <a href="./">使用指南</a>
+        <a href="barcode-types.html" aria-current="page">码制怎么选</a>
+        <a href="label-sizes.html">尺寸速查</a>
+        <a href="batch-print.html">批量套打</a>
+      </nav>
+    </header>
+
+    <main>
+      <article>
+        <h1>42 种条码与二维码怎么选？</h1>
+        <p class="lead">
+          选码制只需要回答三个问题：<strong>谁来扫</strong>（扫码枪还是手机）、<strong>扫什么内容</strong>（纯数字还是含字母）、<strong>标签有多大</strong>。看完这篇你就能定下来。
+        </p>
+
+        <h2>一、先决定：一维码还是二维码</h2>
+        <div class="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>对比项</th>
+                <th>一维码（如 Code128）</th>
+                <th>二维码（如 QR Code）</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>信息量</td>
+                <td>通常 20~30 个字符以内较稳</td>
+                <td>可到数百甚至上千字符</td>
+              </tr>
+              <tr>
+                <td>识读设备</td>
+                <td>激光枪、红光枪、影像式都能扫</td>
+                <td>需要影像式扫码枪或手机摄像头</td>
+              </tr>
+              <tr>
+                <td>占用面积</td>
+                <td>细长条，适合窄长标签</td>
+                <td>正方块，需要更方正的空间</td>
+              </tr>
+              <tr>
+                <td>典型用途</td>
+                <td>库位、箱号、批次、货架、快递单号</td>
+                <td>追溯网址、资产信息、电子凭证</td>
+              </tr>
+              <tr>
+                <td>破损容错</td>
+                <td>低，条被划断就读不出</td>
+                <td>高，QR 最高可恢复约 30% 损坏</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          简单判断：<strong>仓库里用扫码枪快速过货，选一维码；需要手机扫、或信息量大，选二维码。</strong>
+        </p>
+
+        <h2>二、按场景直接选</h2>
+        <div class="scroll-x">
+          <table>
+            <thead>
+              <tr>
+                <th>你的场景</th>
+                <th>推荐码制</th>
+                <th>说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>库位 / 周转箱 / 批次号</td>
+                <td><strong>Code128</strong></td>
+                <td>最通用。支持数字、大小写字母和常见符号，编码密度高，几乎所有扫码枪都认。</td>
+              </tr>
+              <tr>
+                <td>零售商品（超市结算）</td>
+                <td><strong>EAN-13</strong> / UPC-A</td>
+                <td>必须是申请到的标准商品码，位数固定（13 位 / 12 位），不能自己编。</td>
+              </tr>
+              <tr>
+                <td>外贸箱唛 / 物流单元</td>
+                <td><strong>GS1-128</strong> / ITF-14</td>
+                <td>GS1 体系的物流单元标识，含应用标识符（如批次、日期）。ITF-14 适合印在瓦楞纸箱上。</td>
+              </tr>
+              <tr>
+                <td>内部编号、老系统兼容</td>
+                <td><strong>Code39</strong></td>
+                <td>比 Code128 宽松、容错好，但同样内容长度下条码更长，适合内容短、标签空间大的场景。</td>
+              </tr>
+              <tr>
+                <td>网址 / 追溯 / 手机扫</td>
+                <td><strong>QR Code</strong></td>
+                <td>手机原生相机就能识别，无需专用 App；容量大，支持中文。</td>
+              </tr>
+              <tr>
+                <td>电子元器件等极小标签</td>
+                <td><strong>DataMatrix</strong></td>
+                <td>在很小的面积里装下较多数据，PCB、医疗器械行业常用。</td>
+              </tr>
+              <tr>
+                <td>证件 / 物流单据（多行数据）</td>
+                <td><strong>PDF417</strong></td>
+                <td>堆叠式二维，可存较多文字，部分国家的驾照与报关单在用。</td>
+              </tr>
+              <tr>
+                <td>国内票据 / 汉信应用</td>
+                <td><strong>汉信码 HanXin</strong></td>
+                <td>国产二维码标准，支持汉字编码效率高。</td>
+              </tr>
+              <tr>
+                <td>医药包装</td>
+                <td><strong>Pharmacode</strong></td>
+                <td>只编码数字，用于药品包装的产线检测，非通用零售场景。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>三、Code128 与 Code39 到底差在哪</h2>
+        <p>这是被问得最多的一组对比，两者都能编码数字与字母，但：</p>
+        <ul>
+          <li><strong>长度</strong>：同样 10 个字符，Code128 的条码明显更短，标签能做得更小。</li>
+          <li><strong>字符集</strong>：Code128 支持完整 ASCII，Code39 只支持大写字母、数字和少量符号。</li>
+          <li><strong>容错</strong>：Code39 校验机制更宽松，印刷条件差时更"皮实"；Code128 更精密，对印刷质量更敏感。</li>
+          <li><strong>结论</strong>：新项目默认选 <strong>Code128</strong>；只有在受老系统限制、或印刷条件很差时才退回 Code39。</li>
+        </ul>
+
+        <h2>四、支持的 42 种码制完整清单</h2>
+        <p>按类别列出，便于核对你需要的码制是否在列：</p>
+        <ul class="cards">
+          <li>
+            <strong>二维码（12 种）</strong>
+            <span>QR Code、Micro QR、DataMatrix、DataMatrix Rect、Aztec Code、Aztec Compact、MaxiCode、DotCode、Code One、汉信码 HanXin、Ultracode、Swiss QR</span>
+          </li>
+          <li>
+            <strong>堆叠二维（1 种）</strong>
+            <span>PDF417</span>
+          </li>
+          <li>
+            <strong>商品与物流（6 种）</strong>
+            <span>EAN-13、EAN-8、UPC-A、UPC-E、ITF-14、GS1-128</span>
+          </li>
+          <li>
+            <strong>通用一维（10 种）</strong>
+            <span>Code128、Code39、Code39 Extended、Code93、Code93 Extended、Code11、Codabar、MSI Plessey、Plessey、Pharmacode</span>
+          </li>
+          <li>
+            <strong>2/5 家族（7 种）</strong>
+            <span>Interleaved 2/5、Industrial 2/5、Standard 2/5、Matrix 2/5、IATA 2/5、COOP 2/5、Datalogic 2/5</span>
+          </li>
+          <li>
+            <strong>邮政（3 种）</strong>
+            <span>POSTNET、PLANET、KIX</span>
+          </li>
+          <li>
+            <strong>其他（3 种）</strong>
+            <span>Telepen、Telepen Numeric、BC412</span>
+          </li>
+        </ul>
+
+        <h2>五、扫码枪扫不出来？按这个顺序排查</h2>
+        <ol class="steps">
+          <li>
+            <strong>检查静区（Quiet Zone）</strong>。条码左右两侧必须留出空白，一般不小于最窄条宽的 10 倍。把条码拖到紧贴标签边缘是最常见的事故。
+          </li>
+          <li>
+            <strong>检查尺寸是否被压扁</strong>。只改宽度不改高度、或只改高度不改宽度，会改变条空比例，导致无法识读。要缩放就<strong>等比缩放</strong>。
+          </li>
+          <li>
+            <strong>提高打印清晰度</strong>。热敏打印头脏了、碳带耗尽、DPI 过低都会让边缘发虚。用矢量 PDF 输出，避免用截图或低分辨率图片二次放大。
+          </li>
+          <li>
+            <strong>注意颜色搭配</strong>。扫码枪靠红光反射识读，红底黑条、深蓝底黑条这类组合常常直接失效。安全做法是<strong>白底黑条</strong>，其次是浅黄底黑条。
+          </li>
+          <li>
+            <strong>核对码制与内容是否匹配</strong>。EAN-13 必须是 13 位数字，往里填字母必然失败；Code39 遇到小写字母也会出问题（此时用 Code39 Extended）。
+          </li>
+          <li>
+            <strong>确认扫码枪支持该码制</strong>。老式激光枪只能读一维码，读不了 QR / DataMatrix —— 这是设备限制，不是条码画错了。
+          </li>
+        </ol>
+
+        <div class="box">
+          <strong>建议：</strong>打样后务必用<strong>实际要用的那台扫码枪</strong>试扫一次，再批量印刷。不同型号枪对磨损、反光的容忍度差别很大。
+        </div>
+
+        <h2>常见问题</h2>
+        <h3>同一个标签上能放多个条码吗？</h3>
+        <p>可以，而且很常见 —— 例如上面一个 QR 存追溯链接、下面一个 Code128 存批次号。注意两者之间留出足够间距，避免互相干扰识读。</p>
+
+        <h3>条码下面那串数字可以去掉吗？</h3>
+        <p>可以。那是"人读字符"（便于人工核对），不影响扫码。空间紧张时可以关闭，也可以调整它与条码之间的距离。</p>
+
+        <h3>改了字号，条码怎么也跟着变了？</h3>
+        <p>如果条码整体被缩放，说明连人读字符一起被算进了缩放基准。在编辑器里调字号时条码主体尺寸是固定的，如遇异常请检查是否手动拉伸过整个条码组。</p>
+
+        <div class="cta">
+          <p style="margin-bottom: 10px">选好码制了？在线排一张，导出矢量 PDF 直接送印。</p>
+          <a class="btn" href="/">打开标签编辑器</a>
+        </div>
+      </article>
+    </main>
+
+    <footer>
+      <a href="/">标签编辑器</a>
+      <a href="./">使用指南</a>
+      <a href="barcode-types.html">码制怎么选</a>
+      <a href="label-sizes.html">尺寸速查</a>
+      <a href="batch-print.html">批量套打</a>
+    </footer>
+  </body>
+</html>

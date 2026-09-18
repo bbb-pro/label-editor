@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>标签编辑器使用指南：从空白到打印的 6 步 | 在线条码标签制作</title>
+    <meta
+      name="description"
+      content="标签编辑器快速上手指南：设置纸张尺寸、添加条码与文本、导入 Excel 批量套打、导出矢量 PDF 与高清 PNG。6 步完成一张可印刷的条码标签，无需注册，数据不出本地浏览器。"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <link rel="canonical" href="https://057300.xyz/guide/" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="标签编辑器" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:url" content="https://057300.xyz/guide/" />
+    <meta property="og:title" content="标签编辑器使用指南：从空白到打印的 6 步" />
+    <meta
+      property="og:description"
+      content="设置尺寸 → 加条码 → 排版 → 绑定数据 → 批量生成 → 导出打印，6 步做出可印刷的条码标签。"
+    />
+    <meta property="og:image" content="https://057300.xyz/og-image.png" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="gh">
+      <a class="gh-brand" href="/">标签编辑器</a>
+      <nav>
+        <a href="./" aria-current="page">使用指南</a>
+        <a href="barcode-types.html">码制怎么选</a>
+        <a href="label-sizes.html">尺寸速查</a>
+        <a href="batch-print.html">批量套打</a>
+      </nav>
+    </header>
+
+    <main>
+      <article>
+        <h1>标签编辑器使用指南：从空白到打印的 6 步</h1>
+        <p class="lead">
+          这是一份面向第一次使用的快速上手说明。跟着做 6 步，你就能得到一张可以直接印刷、扫码枪能正常识读的条码标签。
+        </p>
+
+        <h2>第 1 步：先定纸张尺寸，再排版</h2>
+        <p>
+          这是最容易被忽略、也最容易返工的一步。先量清楚你手上的标签纸实际尺寸（长 × 宽，单位毫米），在编辑器里把纸张设成同样的数值，排版才有意义 —— 否则屏幕上看着合适，打出来会偏。
+        </p>
+        <ul>
+          <li>纸张尺寸以 <strong>毫米</strong> 为单位自由填写，不受固定规格限制。</li>
+          <li>快递面单、仓储货架标签、产品铭牌、资产标签尺寸各不相同，都可以自定义。</li>
+          <li>一份文件里可以放<strong>多张不同尺寸的纸</strong>，分别排不同的标签（例如一张面单 + 一张小箱唛）。</li>
+        </ul>
+        <p>不确定常用规格？看 <a href="label-sizes.html">标签尺寸速查表</a>。</p>
+
+        <h2>第 2 步：放条码或二维码</h2>
+        <p>
+          从工具栏选择条码，加入画布后可以在右侧属性面板改码制和内容。共支持 <strong>42 种码制</strong>，涵盖一维码、二维码与堆叠码。
+        </p>
+        <ul>
+          <li><strong>物流周转箱 / 库位 / 批次</strong>：Code128（最通用的选择，支持数字与字母）。</li>
+          <li><strong>零售商品</strong>：EAN-13 / UPC-A（必须是标准 13 位或 12 位商品码）。</li>
+          <li><strong>需要装很多信息</strong>：QR Code（网址、批次、追溯链接）。</li>
+          <li><strong>电子元器件等小标签</strong>：DataMatrix（同等面积下密度更高）。</li>
+        </ul>
+        <p>选哪个拿不准？看 <a href="barcode-types.html">42 种条码与二维码怎么选</a>。</p>
+
+        <h2>第 3 步：排版文字与素材</h2>
+        <p>文本框可以拖位置、拉宽度；改的是框的宽度，<strong>不会连带拉伸字号</strong>，排版更可控。除此之外还能加：</p>
+        <ul>
+          <li><strong>形状</strong>：矩形、圆角框、线条，用来分隔区域或画表格线。</li>
+          <li><strong>素材</strong>：内置图标库与储运标志（向上、防潮、易碎、堆码层数等 GB/T 191 标志），直接搜索中文名即可插入。</li>
+          <li><strong>图片</strong>：公司 Logo 拖进画布即可。</li>
+        </ul>
+
+        <h2>第 4 步（可选）：绑定 Excel 数据</h2>
+        <p>
+          如果你要打的是「一批内容不同、版式相同」的标签 —— 比如 200 个不同型号的产品标签 —— 不需要一张张改。导入 Excel 后，把文本框的<strong>名字改成和表头一样</strong>，这个框就会自动被该列的数据替换。
+        </p>
+        <ul class="cards">
+          <li>
+            <strong>名称绑定</strong>
+            <span>框名 = 表头名 → 整框内容被该列替换，最常用</span>
+          </li>
+          <li>
+            <strong>行内混排</strong>
+            <span>用 <code>{{列名}}</code> 插在句子中间，适合「型号：{{型号}}」这类</span>
+          </li>
+          <li>
+            <strong>序列化</strong>
+            <span>流水号自动生成，适合编号递增的资产标签</span>
+          </li>
+        </ul>
+        <p>详细做法见 <a href="batch-print.html">Excel 批量套打完整教程</a>。</p>
+
+        <h2>第 5 步：导出或打印</h2>
+        <div class="box">
+          <strong>优先用矢量 PDF。</strong>PDF 里的文字和条码都是矢量绘制，放大到任意倍率都不模糊，印刷厂和标签打印机都能直接用，而且 PDF 里的文字可以被选中、复制和搜索。
+        </div>
+        <ul>
+          <li><strong>导出 PDF</strong>：矢量输出，推荐用于印刷与归档。</li>
+          <li><strong>导出 PNG</strong>：矢量按倍率重绘，默认约 <strong>384 DPI</strong>，用于贴图、发给供应商或拼版。</li>
+          <li><strong>打印</strong>：走同一条矢量管线，直接调用系统打印对话框，纸型跟随标签尺寸。</li>
+        </ul>
+
+        <h2>第 6 步：保存模板复用</h2>
+        <p>
+          导出为 JSON 模板后，下次打开可以直接载入继续改。模板包含纸张尺寸、所有元素位置、条码设置以及数据绑定关系 —— 也就是说，一次做好版式，以后每月只需换一份 Excel 就能出一批新标签。
+        </p>
+
+        <h2>几个实用细节</h2>
+        <ul>
+          <li><strong>缩放与平移</strong>：滚轮缩放，按住中键（或切到抓手工具）拖动平移。</li>
+          <li><strong>看不清细节</strong>：放大到 400% 检查条码边缘，矢量渲染下放大不会失真。</li>
+          <li><strong>撤销</strong>：<code>Ctrl / Cmd + Z</code>，移动位置、改内容、批量操作都能回退。</li>
+          <li><strong>对齐</strong>：多选后可左对齐、居中、等间距分布，比手动拖更准。</li>
+          <li><strong>隐私</strong>：全部在浏览器本地完成，表格文件和设计稿都不会上传到服务器。</li>
+        </ul>
+
+        <div class="cta">
+          <p style="margin-bottom: 10px">现在就做一张试试 —— 免费、无需注册、打开即用。</p>
+          <a class="btn" href="/">打开标签编辑器</a>
+        </div>
+      </article>
+    </main>
+
+    <footer>
+      <a href="/">标签编辑器</a>
+      <a href="./">使用指南</a>
+      <a href="barcode-types.html">码制怎么选</a>
+      <a href="label-sizes.html">尺寸速查</a>
+      <a href="batch-print.html">批量套打</a>
+    </footer>
+  </body>
+</html>
