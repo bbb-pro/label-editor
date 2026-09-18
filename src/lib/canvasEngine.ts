@@ -2771,6 +2771,37 @@ export class CanvasController {
     this.finalizeObject(img, 'image', null)
   }
 
+  /**
+   * 插入**位图素材**（扩展图标库里 PNG/JPG 的那部分，如 GHS/ADR 危险品标签、
+   * 认证标、能效标 —— 这些只有位图版）。
+   *
+   * 与 addSvgAsset 的矢量对象分流：位图既不能换色、也没法矢量重绘，
+   * 导出时由 jsPDF 以 `addImage` 嵌入（见 vectorExport.drawImageLeaf）。
+   * 图源先转成内嵌 dataURL 再建对象 —— 与 addImageFile 同理，
+   * 保证写进模板 JSON 之后重新打开时图源依然有效。
+   */
+  async addRasterAsset(p: { url: string; name?: string; targetMm?: number }): Promise<boolean> {
+    try {
+      const res = await fetch(p.url)
+      if (!res.ok) return false
+      const dataUrl = await blobToDataUrl(await res.blob())
+      const imgEl = await loadImageEl(dataUrl)
+      const w = imgEl.naturalWidth || imgEl.width || 1
+      const h = imgEl.naturalHeight || imgEl.height || 1
+      const img = new fabric.Image(imgEl)
+      const ratio = mmToPx(p.targetMm ?? 15) / w
+      img.set({ scaleX: ratio, scaleY: ratio })
+      img.set({
+        left: this.paperCenter().x - (w * ratio) / 2,
+        top: this.paperCenter().y - (h * ratio) / 2,
+      })
+      this.finalizeObject(img, 'image', null)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 把 SVG 内部片段按 viewBox / 配色拼成完整 SVG 字符串（插入与矢量导出共用） */
   composeAssetSvg(p: {
     inner: string
@@ -2780,10 +2811,19 @@ export class CanvasController {
     strokeWidth?: number
   }): string {
     const vb = p.viewBox || '0 0 24 24'
+    const c = p.color || '#000000'
+    // 扩展图标库：图形自带线宽与坐标系（有的 viewBox 3200 见方、stroke-width 116），
+    // 颜色靠编译期埋下的 `__C__` 占位符驱动 —— 只回填颜色，绝不套用本编辑器的线宽，
+    // 否则細线稿会被 stroke-width=1.6 顶成一片黑。
+    if (p.inner.includes('__C__')) {
+      return (
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" fill="${c}" stroke="${c}">` +
+        `${p.inner.replace(/__C__/g, c)}</svg>`
+      )
+    }
     const head = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">`
     if (!p.isStroke) return head + p.inner + '</svg>'
     const sw = p.strokeWidth ?? 2
-    const c = p.color || '#000000'
     return (
       `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" fill="none" stroke="${c}" ` +
       `stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${p.inner}</svg>`
@@ -3819,5 +3859,15 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onload = () => resolve(reader.result as string)
     reader.onerror = () => reject(new Error('读取图片文件失败'))
     reader.readAsDataURL(file)
+  })
+}
+
+/** 把网络取回的二进制内容读成内嵌 dataURL（素材库位图入画布用） */
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error('读取素材图片失败'))
+    reader.readAsDataURL(blob)
   })
 }

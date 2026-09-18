@@ -1116,6 +1116,13 @@ export default function App() {
       toast.error('画布未就绪')
       return
     }
+    // 扩展图标库里有一批只有位图版的（GHS/ADR 危险品标签、认证标、能效标）：
+    // 它们走位图通道，导出 PDF 时以嵌入图像保留，不做矢量重绘。
+    if (item.rasterSrc) {
+      const okRaster = await ctrl.addRasterAsset({ url: item.rasterSrc, name: item.name, targetMm: 15 })
+      if (!okRaster) toast.error('素材插入失败')
+      return
+    }
     // 合规标志里 'filled' 类（GHS 红菱形、能效等级彩条）自带固有配色：
     // 不能套线稿壳去改色，否则红框 / 彩条会被统一涂成单色而失去含义。
     const isFilled = item.fillStyle === 'filled'
@@ -1125,6 +1132,8 @@ export default function App() {
     const ok = await ctrl.addSvgAsset({
       inner: item.inner,
       viewBox,
+      // 扩展图标库的线稿自带线宽（由 __C__ 分支单独处理），这里仍按线稿登记，
+      // 以便插入后还能在属性面板里换色。
       isStroke: item.set !== 'emoji' && !isFilled,
       color: '#111827',
       strokeWidth: item.set === 'marks' ? 1.6 : item.set === 'symbols' ? 1.5 : 2,

@@ -1,6 +1,6 @@
 /** 素材库数据类型 */
 
-export type AssetSet = 'lucide' | 'emoji' | 'symbols' | 'marks'
+export type AssetSet = 'lucide' | 'emoji' | 'symbols' | 'marks' | 'ktm'
 
 export interface AssetItem {
   /** 唯一 id，形如 `lucide:package` / `emoji:1f600` */
@@ -29,6 +29,13 @@ export interface AssetItem {
   viewBox?: string
   /** 可选：emoji 原字符，用于面板内以系统字体快速预览 */
   preview?: string
+  /**
+   * 可选：位图素材的站内相对路径（扩展图标库里 PNG/JPG 那部分）。
+   * 位图不能进 `inner`（那是矢量片段），插入时交给 fabric.Image 走位图通道。
+   */
+  rasterSrc?: string
+  /** 可选：位图原始像素尺寸，形如 `240x240`，仅用于面板角标提示清晰度 */
+  rasterSize?: string
 }
 
 export interface AssetCat {
