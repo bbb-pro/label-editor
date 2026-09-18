@@ -9,7 +9,7 @@ import { X, Search, Loader2, Sparkles, LockKeyhole } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { AssetCat, AssetItem } from '@/types/assets'
-import { assetPreviewUri, collectCategories, filterAssets, loadEmojiSet, loadLucideSet, loadSymbolsSet } from '@/lib/assetsLib'
+import { assetPreviewUri, collectCategories, filterAssets, loadEmojiSet, loadLucideSet, loadMarksSet, loadSymbolsSet } from '@/lib/assetsLib'
 
 /** 每批渲染数量：够铺满一屏即可，滚动到底再追加，避免首屏卡顿 */
 const PAGE_SIZE = 80
@@ -55,9 +55,10 @@ export default function AssetsPanel({ open, onClose, onInsert }: AssetsPanelProp
       try {
         const [lucide, emoji] = await Promise.all([loadLucideSet(), loadEmojiSet()])
         const symbols = loadSymbolsSet()
+        const marks = loadMarksSet()
         if (!alive) return
-        setItems([...symbols.items, ...lucide.items, ...emoji.items])
-        setLicenses([lucide.license, symbols.license, emoji.license])
+        setItems([...marks.items, ...symbols.items, ...lucide.items, ...emoji.items])
+        setLicenses([lucide.license, symbols.license, marks.license, emoji.license])
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : '素材数据加载失败')
       } finally {

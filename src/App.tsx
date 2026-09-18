@@ -1107,7 +1107,7 @@ export default function App() {
   }, [])
 
   /**
-   * 插入素材（图标 / 表情）到标签中心。
+   * 插入素材（图标 / 表情 / 标志）到标签中心。
    * 素材以矢量保存：缩放不失真，PDF 导出时整段重绘为矢量路径。
    */
   const onInsertAsset = useCallback(async (item: AssetItem) => {
@@ -1116,12 +1116,15 @@ export default function App() {
       toast.error('画布未就绪')
       return
     }
+    // 合规标志里 'filled' 类（GHS 红菱形、能效等级彩条）自带固有配色：
+    // 不能套线稿壳去改色，否则红框 / 彩条会被统一涂成单色而失去含义。
+    const isFilled = item.fillStyle === 'filled'
     const ok = await ctrl.addSvgAsset({
       inner: item.inner,
       viewBox: item.set === 'emoji' ? '0 0 36 36' : '0 0 24 24',
-      isStroke: item.set !== 'emoji',
+      isStroke: item.set !== 'emoji' && !isFilled,
       color: '#111827',
-      strokeWidth: item.set === 'symbols' ? 1.5 : 2,
+      strokeWidth: item.set === 'marks' ? 1.6 : item.set === 'symbols' ? 1.5 : 2,
       name: item.name,
       targetMm: 15,
     })

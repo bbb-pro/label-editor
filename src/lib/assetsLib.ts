@@ -7,6 +7,7 @@
 import type { AssetItem, AssetCat, AssetSet } from '@/types/assets'
 import { ZH, CAT_RULES, DEFAULT_CAT, TRANSPORT_CAT, categorizeLucide } from '@/lib/assetMeta'
 import { SYMBOLS } from '@/lib/assetSymbols'
+import { MARKS, MARK_CATS } from '@/lib/assetMarks'
 
 /** Lucide / 储运标志共用的线稿套壳：颜色与线宽在取用时替换 */
 const STROKE_WRAP = (viewBox: number, inner: string, color: string, strokeWidth: number) =>
@@ -99,13 +100,41 @@ export function loadSymbolsSet(): { items: AssetItem[]; license: string } {
     set: 'symbols',
     cat: TRANSPORT_CAT.id,
     inner,
+    fillStyle: 'line',
   }))
   return { items, license: '包装储运标志 · 自绘（GB/T 191 语义）' }
 }
 
-/** 把素材渲染为完整 SVG 字符串（lucide/储运标志支持换色） */
+/**
+ * 标准合规标志集合（GHS 危险品 / 洗涤护理 / 回收环保 / 认证标识）：静态内联，无需 fetch。
+ * 'filled' 类内含固有配色（GHS 红菱形、能效彩条），换色无意义，取用时原样输出。
+ */
+export function loadMarksSet(): { items: AssetItem[]; license: string } {
+  const items: AssetItem[] = MARKS.map(([id, name, keywords, cat, style, inner]) => ({
+    id: `mark:${id}`,
+    name,
+    search: `${name} ${keywords}`.toLowerCase(),
+    set: 'marks',
+    cat,
+    inner,
+    fillStyle: style,
+  }))
+  return { items, license: '标准合规标志 · 自绘（GHS / ISO 3758 / 回收 / 认证 语义）' }
+}
+
+/** 含固有配色的素材（GHS 红菱形、能效彩条）原样输出，不覆盖颜色与线宽 */
+const PLAIN_WRAP = (viewBox: number, inner: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewBox} ${viewBox}">${inner}</svg>`
+
+/** 把素材渲染为完整 SVG 字符串（线稿类支持换色） */
 export function assetToSvg(item: AssetItem, color = '#000000', strokeWidth = 2): string {
   if (item.set === 'emoji') return EMOJI_WRAP(item.inner)
+  if (item.set === 'marks') {
+    // 合规标志：filled 自带配色；line 用略粗线稿（合规符号普遍比 UI 图标描边重）
+    return item.fillStyle === 'filled'
+      ? PLAIN_WRAP(24, item.inner)
+      : STROKE_WRAP(24, item.inner, color, 1.6)
+  }
   if (item.set === 'symbols') return STROKE_WRAP(24, item.inner, color, 1.5)
   return LUCIDE_WRAP(item.inner, color, strokeWidth)
 }
@@ -122,6 +151,7 @@ export function collectCategories(items: AssetItem[], set: AssetSet | 'all'): As
   const labelById = new Map(CAT_RULES.map((r) => [r.id, r.label]))
   labelById.set(DEFAULT_CAT.id, DEFAULT_CAT.label)
   labelById.set(TRANSPORT_CAT.id, TRANSPORT_CAT.label)
+  for (const c of MARK_CATS) labelById.set(c.id, c.label)
   for (const it of items) {
     if (set !== 'all' && it.set !== set) continue
     if (map.has(it.cat)) continue
