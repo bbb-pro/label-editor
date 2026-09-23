@@ -9,6 +9,10 @@
 // 其中 table 与 time 我们没有对应元素类型，由 buildTemplateSpec 展开为等价的原生元素：
 //   · table → 外框矩形 + 分隔条矩形 + 每格一个文本框（都是顶层普通对象，可各自改样式）
 //   · time  → 一个普通文本框，内容取载入时刻的日期时间
+//
+// 【与通用模板的关系】本套（行业模板）已并入通用模板的那套分类里，UI 上不再分两个页签 ——
+// 合并规则与实现见 src/lib/templateLibraryMerged.ts。**数据仍在这里维护**，改动本数组
+// 不需要动合并代码（分类归属由 INDUSTRY_CAT_MAP 决定）。
 
 import type { BarcodeType } from '@/lib/barcode'
 import { mmToPx } from '@/lib/mm'

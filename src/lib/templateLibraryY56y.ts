@@ -10,6 +10,10 @@
 //   矢量图标与位图（以相对文件名引用 public/assets/templates/assets/ 下的文件）。
 //
 // 换算口径的推导与验证见 scripts/y56y/convert.mjs 头部注释（含逐元素交叉校验）。
+//
+// 【分类归属】本套的分类体系就是模板库的分类体系 —— 内置的 12 个行业模板已按
+// INDUSTRY_CAT_MAP 并入其中语义对应的分类，合并逻辑见 src/lib/templateLibraryMerged.ts。
+// 所以不要按「第二套源」去理解它：它现在是模板库的主干，行业模板是挂上来的。
 
 import type { TemplateSpec, TplNode } from '@/lib/templateLibrary'
 
