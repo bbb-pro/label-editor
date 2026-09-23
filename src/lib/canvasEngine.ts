@@ -754,6 +754,13 @@ export class CanvasController {
 
   // ── 内部工具 ──────────────────────────────────────────────
   private _raf: number | null = null
+  /**
+   * 模板自带图片资源的预解析结果（键 = 该节点在 spec.nodes 里的下标）。
+   * 见 prepareTemplateAssets：矢量图标存解析好的 fabric 组（每个节点各解析一份，
+   * 因为同一张图在一个模板里可能出现两次，而 fabric 对象不能同时属于两个组），
+   * 位图存 fabric.Image。存好之后再进同步的 loadTemplate。
+   */
+  private templateAssets = new Map<number, fabric.Object>()
   private emitActiveThrottled() {
     if (this._raf) return
     this._raf = requestAnimationFrame(() => {
@@ -1383,6 +1390,28 @@ export class CanvasController {
     this.events.onDirty()
   }
 
+  /** 纸张底色（未设 = '#ffffff'） */
+  paperColorOf(id: string): string {
+    return this.papers.find((p) => p.id === id)?.bgColor ?? '#ffffff'
+  }
+
+  /**
+   * 设置纸张底色。传 '#ffffff' 或空串 = 恢复白底（等价于不铺底），
+   * 传 'transparent' = 导出不铺底（画布上仍显示为白卡，便于区分纸张边界）。
+   * 这是**纸张属性**而非画布对象：不进撤销栈的对象快照也没关系 ——
+   * 纸张本身就在 `_papers` 里随快照一起回滚（见 snapshot/loadFromJSON）。
+   */
+  setPaperColor(id: string, color: string) {
+    const p = this.papers.find((x) => x.id === id)
+    if (!p) return
+    const next = !color || color === '#ffffff' ? undefined : color
+    if ((p.bgColor ?? undefined) === next) return
+    p.bgColor = next
+    this.recreatePaperRects()
+    this.canvas.requestRenderAll()
+    this.events.onDirty()
+  }
+
   /**
    * 在当前活动纸的下方追加一张新纸（尺寸沿用当前纸），并切换为活动纸。
    * 返回新纸 id；UI 可用它做后续定位。
@@ -1395,6 +1424,8 @@ export class CanvasController {
       cur.left,
       cur.top + mmToPx(cur.heightMm) + mmToPx(PAPER_GAP_MM),
     )
+    // 沿用尺寸的同时沿用底色：多张同款标签（彩底/黑底）不该每张都重新设色
+    if (cur.bgColor) p.bgColor = cur.bgColor
     this.papers.push(p)
     this.activePaperIdValue = p.id
     this.relayoutPapers()
@@ -1541,12 +1572,15 @@ export class CanvasController {
       if ((o as { excludeFromExport?: boolean }).excludeFromExport) this.canvas.remove(o)
     }
     for (const p of this.papers) {
+      // 纸张底色：画布上要看得见（否则反色标签整个"白底白字"看不见），
+      // 'transparent' 在画布上仍用白色示人，只是导出时不铺底。
+      const bg = p.bgColor && p.bgColor !== 'transparent' ? p.bgColor : '#ffffff'
       const rect = new fabric.Rect({
         left: p.left,
         top: p.top,
         width: mmToPx(p.widthMm),
         height: mmToPx(p.heightMm),
-        fill: '#ffffff',
+        fill: bg,
         stroke: '#cbd5e1',
         strokeWidth: 1,
         opacity: 1,
@@ -3247,10 +3281,13 @@ export class CanvasController {
       }
       if (rec.stroke !== null || rec.bg !== null) strippedRegion.push(rec)
     }
-    // ⚠️ 工作区底色是灰的（#e2e8f0）。隐藏纸卡后必须把 backgroundColor 也临时置白，
-    // 否则导出的 PNG 会是灰底（而非白纸）。
+    // ⚠️ 工作区底色是灰的（#e2e8f0）。隐藏纸卡后必须把 backgroundColor 也临时置成
+    // 「这张纸的底色」，否则导出的 PNG 会是灰底（而非白纸），彩底/黑底标签也会丢底色。
     const prevBg = this.canvas.backgroundColor
-    this.canvas.backgroundColor = '#ffffff'
+    const paperBgColor = paperId
+      ? (this.papers.find((x) => x.id === paperId)?.bgColor ?? '#ffffff')
+      : (this.activePaper.bgColor ?? '#ffffff')
+    this.canvas.backgroundColor = paperBgColor === 'transparent' ? 'transparent' : paperBgColor
     let url = ''
     try {
       const raw = this.canvas.toCanvasElement(effectiveScale, {
@@ -3386,6 +3423,8 @@ export class CanvasController {
             heightMm: typeof raw.heightMm === 'number' ? raw.heightMm : raw.widthMm,
             left: typeof raw.left === 'number' ? raw.left : mmToPx(WORKSPACE_MARGIN_MM),
             top: typeof raw.top === 'number' ? raw.top : mmToPx(WORKSPACE_MARGIN_MM),
+            // 底色：旧存档没有该字段 → 白底（与以前行为一致）
+            ...(typeof raw.bgColor === 'string' && raw.bgColor ? { bgColor: raw.bgColor } : {}),
           })
         }
         if (restored.length > 0) {
@@ -3451,6 +3490,57 @@ export class CanvasController {
    * 而模板需要精确的绝对坐标。这里统一按「纸张左上角 + 规格偏移」定位；
    * 建好后与手工绘制的对象完全等价（可选中 / 编辑 / 编组 / 撤销 / 导出）。
    */
+  /**
+   * 预解析模板里引用的图片资源（矢量图标 / 位图）。
+   *
+   * 为什么单独一步：fabric 把 SVG 串解析成 path 组（loadSVGFromString）是**异步**的，
+   * 而 loadTemplate 是同步落盘流程（要 pushHistory / 重建纸张 / 批量 add）。
+   * 所以资源必须先在这里备好，再进 loadTemplate 同步建对象。
+   * 单个资源取不到只跳过该元素，不影响模板其余内容。
+   */
+  async prepareTemplateAssets(spec: TemplateSpec): Promise<void> {
+    this.templateAssets.clear()
+    const jobs: Promise<void>[] = []
+    spec.nodes.forEach((n, i) => {
+      if (n.kind !== 'image') return
+      jobs.push(
+        (async () => {
+          try {
+            const res = await fetch(n.src)
+            if (!res.ok) return
+            if (n.vector) {
+              const parsed = await parseAssetSvg(await res.text())
+              if (parsed) {
+                const g = parsed.group
+                const c = cf(g)
+                c.kind = 'svg'
+                c._svgInner = parsed.inner
+                c._svgViewBox = parsed.viewBox
+                c._svgIsStroke = false
+                this.templateAssets.set(i, g)
+              }
+            } else {
+              const url = await blobToDataUrl(await res.blob())
+              this.templateAssets.set(i, new fabric.Image(await loadImageEl(url)))
+            }
+          } catch {
+            /* 资源缺失/跨域失败时静默跳过，其余元素照常落盘 */
+          }
+        })(),
+      )
+    })
+    await Promise.all(jobs)
+  }
+
+  /**
+   * 载入模板的**推荐入口**：先备好图片资源再落盘。
+   * 不含图片资源的模板（原 transkoi 那套）走它与走 loadTemplate 完全等价。
+   */
+  async loadTemplateWithAssets(spec: TemplateSpec): Promise<void> {
+    await this.prepareTemplateAssets(spec)
+    this.loadTemplate(spec)
+  }
+
   loadTemplate(spec: TemplateSpec): void {
     // 撤销栈先记下"载入前"，Ctrl+Z 可退回原画布
     this.pushHistory()
@@ -3468,6 +3558,9 @@ export class CanvasController {
     )
     this.papers = [paper]
     this.activePaperIdValue = paper.id
+    // 模板自带底色（黑底白字 / 黄底警示等）→ 落到**纸张属性**上：
+    // 用户之后想换底色只需改纸张设置，不必去图层里找那个铺满整纸的背景块。
+    if (spec.bgColor && spec.bgColor !== '#ffffff') paper.bgColor = spec.bgColor
     this.relayoutPapers()
     this.resizeWorkspace()
     this.recreatePaperRects()
@@ -3476,7 +3569,8 @@ export class CanvasController {
     const oy = paper.top
     const paperRight = ox + mmToPx(spec.widthMm)
 
-    for (const n of spec.nodes) {
+    for (let i = 0; i < spec.nodes.length; i++) {
+      const n = spec.nodes[i]
       if (n.kind === 'text') {
         // ── 单行版式还原 ──────────────────────────────────────────────
         // 源模板的每个 text 元素都是单行标签（声明高度 ≈ 1 行），但框宽贴得很紧。
@@ -3497,7 +3591,11 @@ export class CanvasController {
         const font = fontForContent(n.text)
         const natural = measureSingleLinePx(n.text, fsPx, n.bold, font)
         const wanted = natural * 1.02 + 2
-        if (wanted > boxW) {
+        if (n.multiline) {
+          // 多行段落（原站 textarea）：框宽就是版心宽度，必须按框宽折行 —— 不能放宽，
+          // 否则段落会顺着放宽后的宽重新折行，行数与设计稿不符。
+          boxFinal = boxW
+        } else if (wanted > boxW) {
           const avail = availableBoxWidth(
             n.align,
             left,
@@ -3528,28 +3626,146 @@ export class CanvasController {
           fontSize: fsPx,
           fontFamily: font,
           fontWeight: n.bold ? 'bold' : 'normal',
-          fill: '#000000',
+          fontStyle: n.italic ? 'italic' : 'normal',
+          underline: !!n.underline,
+          fill: n.color ?? '#000000',
           originX: 'left',
           originY: 'top',
           textAlign: n.align,
           splitByGrapheme: true,
+          ...(n.multiline ? { lineHeight: n.lineHeight ?? 1.16 } : {}),
         })
+        // 原站 rotate 的语义是「绕元素框中心旋转」（其预览 SVG 即 rotate(a,cx,cy)）。
+        // 所以带旋转的文本改成以框中心为原点定位，才能转在设计稿的位置上；
+        // 框高取元素声明高度（hMm），缺省退回一个行高。
+        const deg = n.rotateDeg ?? 0
+        if (deg) {
+          // 框高：旋转节点在转换期带了 hMm（元素声明高度）；万一缺失，按 1.16 倍行高估。
+          const bhMm = n.hMm ?? pxToMm(fsPx) * 1.16
+          obj.set({
+            originX: 'center',
+            originY: 'center',
+            left: ox + mmToPx(n.xMm + n.wMm / 2),
+            top: oy + mmToPx(n.yMm + bhMm / 2),
+            width: n.multiline ? mmToPx(n.wMm) : Math.max(boxFinal, wanted),
+            angle: deg,
+          })
+        }
+        // 字距：fabric 的 charSpacing 是千分之一 em（随字号变化）→ 按 pt 存档换算，
+        // 才能在之后改字号时保持视觉字距不变（与属性面板同一套口径）。
+        if (n.letterSpacingPt) {
+          obj.set('charSpacing', ptToCharSpacing(n.letterSpacingPt, obj.fontSize ?? fsPx))
+          cf(obj)._letterSpacingPt = n.letterSpacingPt
+        }
         this.finalizeObject(obj, 'text', n.text, false)
       } else if (n.kind === 'rect') {
+        const wPx = mmToPx(n.wMm)
+        const hPx = mmToPx(n.hMm)
+        const radiusPx = mmToPx(n.radiusMm ?? 0)
         const obj = new fabric.Rect({
           left: ox + mmToPx(n.xMm),
           top: oy + mmToPx(n.yMm),
-          width: mmToPx(n.wMm),
-          height: mmToPx(n.hMm),
+          width: wPx,
+          height: hPx,
           // 实心块（表格分隔条/横线）用 fill；空心框用 stroke
-          fill: n.filled ? '#000000' : 'transparent',
-          stroke: n.filled ? '' : '#000000',
-          strokeWidth: n.filled ? 0 : Math.max(0.5, mmToPx(n.strokeMm)),
+          fill: n.filled ? n.fillColor ?? '#000000' : 'transparent',
+          stroke: n.filled ? undefined : n.strokeColor ?? '#000000',
+          strokeWidth: n.filled ? 0 : Math.max(0.4, mmToPx(n.strokeMm)),
+          strokeUniform: true,
+          rx: radiusPx,
+          ry: radiusPx,
+          originX: 'left',
+          originY: 'top',
+        })
+        if (n.rotateDeg) {
+          obj.set({
+            originX: 'center',
+            originY: 'center',
+            left: ox + mmToPx(n.xMm + n.wMm / 2),
+            top: oy + mmToPx(n.yMm + n.hMm / 2),
+            angle: n.rotateDeg,
+          })
+        }
+        this.finalizeObject(obj, 'rect', null, false)
+      } else if (n.kind === 'line') {
+        const b = Math.max(0.25, mmToPx(n.strokeMm))
+        const obj = new fabric.Line(
+          [ox + mmToPx(n.x1Mm), oy + mmToPx(n.y1Mm), ox + mmToPx(n.x2Mm), oy + mmToPx(n.y2Mm)],
+          {
+            stroke: n.color ?? '#000000',
+            strokeWidth: Math.max(0.4, mmToPx(n.strokeMm)),
+            strokeUniform: true,
+            ...(n.dashed ? { strokeDashArray: [b * 3, b * 2] } : {}),
+          },
+        )
+        this.finalizeObject(obj, 'line', null, false)
+      } else if (n.kind === 'ellipse') {
+        const obj = new fabric.Ellipse({
+          left: ox + mmToPx(n.cxMm - n.rxMm),
+          top: oy + mmToPx(n.cyMm - n.ryMm),
+          rx: mmToPx(n.rxMm),
+          ry: mmToPx(n.ryMm),
+          fill: n.filled ? n.fillColor ?? '#000000' : 'transparent',
+          stroke: n.filled ? undefined : n.strokeColor ?? '#000000',
+          strokeWidth: n.filled ? 0 : Math.max(0.4, mmToPx(n.strokeMm ?? 0.3)),
           strokeUniform: true,
           originX: 'left',
           originY: 'top',
         })
-        this.finalizeObject(obj, 'rect', null, false)
+        const c = cf(obj)
+        c._shapeType = 'ellipse'
+        this.finalizeObject(obj, 'shape', null, false)
+      } else if (n.kind === 'image') {
+        const asset = this.templateAssets.get(i)
+        if (!asset) continue
+        const boxWpx = mmToPx(n.wMm)
+        const boxHpx = mmToPx(n.hMm)
+        const boxLeft = ox + mmToPx(n.xMm)
+        const boxTop = oy + mmToPx(n.yMm)
+        if (n.vector) {
+          // 资源已归一化为「viewBox 从 0 0 起 + 满 viewBox 透明框架」，
+          // 所以组的包围盒严格等于 viewBox，元素框 = viewBox 的直接映射。
+          const vb = (cf(asset)._svgViewBox ?? '0 0 1 1').trim().split(/[\s,]+/).map(Number)
+          const vbW = vb[2] || 1
+          const vbH = vb[3] || 1
+          let kx = boxWpx / vbW
+          let ky = boxHpx / vbH
+          let l = boxLeft
+          let t = boxTop
+          if (n.keepAspect) {
+            // 等比缩小后居中（原站 isAspectRatio=1 的语义）
+            kx = ky = Math.min(kx, ky)
+            l = boxLeft + (boxWpx - vbW * kx) / 2
+            t = boxTop + (boxHpx - vbH * ky) / 2
+          }
+          asset.set({ originX: 'left', originY: 'top', left: l, top: t, scaleX: kx, scaleY: ky })
+        } else {
+          const el = (asset as fabric.Image).getElement() as HTMLImageElement | HTMLCanvasElement
+          const iw = (el as HTMLImageElement).naturalWidth || el.width || 1
+          const ih = (el as HTMLImageElement).naturalHeight || el.height || 1
+          let kx = boxWpx / iw
+          let ky = boxHpx / ih
+          if (n.keepAspect) kx = ky = Math.min(kx, ky)
+          ;(asset as fabric.Image).set({
+            originX: 'left',
+            originY: 'top',
+            left: boxLeft,
+            top: boxTop,
+            scaleX: kx,
+            scaleY: ky,
+          })
+        }
+        if (n.rotateDeg) {
+          asset.set({
+            originX: 'center',
+            originY: 'center',
+            left: boxLeft + boxWpx / 2,
+            top: boxTop + boxHpx / 2,
+            angle: n.rotateDeg,
+          })
+        }
+        asset.setCoords()
+        this.finalizeObject(asset, n.vector ? 'svg' : 'image', null, false)
       } else {
         const group = this.buildBarcodeInto(n, ox, oy)
         if (group) this.finalizeObject(group, 'barcode', n.text, false)
@@ -3580,6 +3796,9 @@ export class CanvasController {
   ): fabric.Group | null {
     let type = n.barcodeType
     let settings = defaultSettingsFor(type)
+    // 模板显式声明的人读文字 / 容错等级优先（缺省沿用按码制推断的默认值）
+    if (typeof n.showText === 'boolean') settings.showText = n.showText
+    if (n.eccLevel) settings.eccLevel = n.eccLevel
     let built = this.buildBarcodeGroup(type, n.text, settings)
     // 兜底：内容不符合该码制时（零售码位数/校验位不合规、含该码制不支持的字符…）
     // 退回 code128 渲染，保证「模板上有条码的位置一定有码」，而不是整块留白。
@@ -3632,7 +3851,57 @@ export class CanvasController {
       left: ox + mmToPx(n.xMm) + (is2d ? Math.max(0, (boxW - w * sx) / 2) : 0),
       top: oy + mmToPx(n.yMm),
     })
+    // 模板自带的条码配色（原站允许任意前景色；背景透明则不画底）
+    if (n.fgColor) this.applyBarcodeColors(group, n.fgColor, n.bgColor)
+    // 原站 rotate 绕元素框中心 —— 与文本/图形同一套语义
+    if (n.rotateDeg) {
+      const cx = ox + mmToPx(n.xMm + n.wMm / 2)
+      const cy = oy + mmToPx(n.yMm + n.hMm / 2)
+      group.set({ originX: 'center', originY: 'center', left: cx, top: cy, angle: n.rotateDeg })
+      group.setCoords()
+    }
     return group
+  }
+
+  /**
+   * 套用条码配色。矢量条码组的子对象只有两类：模块矩形（黑条）与人读文字，
+   * 都统一刷成模板声明的前景色；背景色只在**非白**时补一块底衬（纸本身是白的，
+   * 白底衬没有意义还会挡住纸张纹理）。
+   *
+   * 注意调用时机：必须在 `_barcodeRendered` 写好之后再调 —— refreshAllContent 靠
+   * 该签名判断「内容没变就不重建」，签名一致就不会重建掉刚上的颜色。
+   */
+  private applyBarcodeColors(group: fabric.Group, fg: string, bg?: string) {
+    const kids = group.getObjects?.() ?? []
+    // 非白背景：在组内最底层插一块覆盖整个组内接框的底衬
+    if (bg && bg !== '#ffffff' && !bg.startsWith('rgba(0,0,0,0)')) {
+      const bounds = kids.reduce(
+        (b, k) => ({
+          w: Math.max(b.w, (k.left ?? 0) + (k.getScaledWidth?.() ?? k.width ?? 0)),
+          h: Math.max(b.h, (k.top ?? 0) + (k.getScaledHeight?.() ?? k.height ?? 0)),
+        }),
+        { w: 0, h: 0 },
+      )
+      if (bounds.w > 0 && bounds.h > 0) {
+        group.insertAt(
+          new fabric.Rect({
+            left: 0,
+            top: 0,
+            width: bounds.w,
+            height: bounds.h,
+            fill: bg,
+            selectable: false,
+            evented: false,
+          }),
+          0,
+          false,
+        )
+      }
+    }
+    for (const kid of group.getObjects?.() ?? []) {
+      if (cf(kid).fill !== undefined) kid.set({ fill: fg })
+    }
+    group.setCoords()
   }
 
   getObjectCount() {
@@ -3855,6 +4124,43 @@ export class CanvasController {
       this._typingSeen = true
     }
   }
+}
+
+/**
+ * 模板资源里的矢量图标（.svg）→ fabric 组。
+ *
+ * 这些 SVG 由构建脚本 `scripts/y56y/convert.mjs` 归一化过：百分比坐标已换成绝对
+ * 用户单位、viewBox 平移到 0 0 W H、并塞了一个「满 viewBox 的透明框架矩形」——
+ * 于是组的包围盒严格等于 viewBox，导入侧才能把「元素框」直接映射成 viewBox。
+ * 同时抽出 inner 与 viewBox，供矢量导出（svg2pdf 整段重绘）复用。
+ */
+async function parseAssetSvg(
+  svgText: string,
+): Promise<{ group: fabric.Object; viewBox: string; inner: string } | null> {
+  const vb = /viewBox\s*=\s*"([^"]*)"/i.exec(svgText)
+  const viewBox = vb ? vb[1].trim() : '0 0 24 24'
+  const inner = svgText.replace(/^[\s\S]*?<svg\b[^>]*>/i, '').replace(/<\/svg\s*>\s*$/i, '')
+  const parsed = await new Promise<{ objects: fabric.Object[]; options: Record<string, unknown> } | null>(
+    (resolve) => {
+      try {
+        fabric.loadSVGFromString(svgText, (objects, options) =>
+          resolve({ objects: (objects ?? []) as fabric.Object[], options: (options ?? {}) as Record<string, unknown> }),
+        )
+      } catch {
+        resolve(null)
+      }
+    },
+  )
+  if (!parsed || parsed.objects.length === 0) return null
+  let group: fabric.Object | null = null
+  try {
+    group = fabric.util.groupSVGElements(parsed.objects, parsed.options as unknown as never)
+  } catch {
+    return null
+  }
+  if (!group) return null
+  group.set({ originX: 'left', originY: 'top' })
+  return { group, viewBox, inner }
 }
 
 function loadImageEl(url: string): Promise<HTMLImageElement> {

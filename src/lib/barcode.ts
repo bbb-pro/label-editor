@@ -38,6 +38,8 @@ export type BarcodeType =
   // 零售 / EAN / UPC
   | 'ean13'
   | 'ean8'
+  | 'ean2'
+  | 'ean5'
   | 'upca'
   | 'upce'
   | 'itf14'
@@ -94,6 +96,9 @@ export const BARCODE_OPTIONS: BarcodeMeta[] = [
   // 零售 / EAN / UPC
   { value: 'ean13', label: 'EAN-13', group: '商品码' },
   { value: 'ean8', label: 'EAN-8', group: '商品码' },
+  // EAN 附加码：印在主码右侧的小号 2/5 位数字（期刊、书刊价格补充码）
+  { value: 'ean2', label: 'EAN-2 附加码', group: '商品码' },
+  { value: 'ean5', label: 'EAN-5 附加码', group: '商品码' },
   { value: 'upca', label: 'UPC-A', group: '商品码' },
   { value: 'upce', label: 'UPC-E', group: '商品码' },
   { value: 'itf14', label: 'ITF-14', group: '商品码' },

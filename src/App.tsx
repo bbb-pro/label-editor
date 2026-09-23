@@ -36,7 +36,9 @@ import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec, BarcodeAlign } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
 import TemplateLibrary from '@/sections/TemplateLibrary'
+import HelpCenter from '@/sections/HelpCenter'
 import { buildTemplateSpec, type LibTemplate } from '@/lib/templateLibrary'
+import { buildY56ySpec, type Y56yTemplate } from '@/lib/templateLibraryY56y'
 import { useIsCompact } from '@/hooks/use-compact'
 import {
   Layers,
@@ -103,6 +105,8 @@ export default function App() {
   const [selection, setSelection] = useState<{ count: number; isGroup: boolean; isBarcodeGroup: boolean }>({ count: 0, isGroup: false, isBarcodeGroup: false })
   /** 模板库对话框 */
   const [libraryOpen, setLibraryOpen] = useState(false)
+  /** 使用帮助面板 */
+  const [helpOpen, setHelpOpen] = useState(false)
 
   // ── 响应式布局 / 手抓平移 / 移动端属性抽屉 ─────────────
   const isCompact = useIsCompact()
@@ -173,6 +177,8 @@ export default function App() {
           return next
         })
         // 多标签：纸张列表/当前纸同步（内容一致时不触发重渲染）
+        // ⚠️ 浅比较必须带上 bgColor —— 漏掉它时改纸张底色会被判成「没变化」，
+        // 面板的色板高亮与缩略色块会停在上一个颜色上。
         setPapers((prev) => {
           const next = ctrl.listPapers()
           const same =
@@ -184,7 +190,8 @@ export default function App() {
                 p.widthMm === next[i].widthMm &&
                 p.heightMm === next[i].heightMm &&
                 p.left === next[i].left &&
-                p.top === next[i].top,
+                p.top === next[i].top &&
+                (p.bgColor ?? '') === (next[i].bgColor ?? ''),
             )
           return same ? prev : next
         })
@@ -893,6 +900,18 @@ export default function App() {
     [applyPaper],
   )
 
+  /**
+   * 纸张底色。底色是**纸张属性**而不是画布对象 —— 不占图层、不需要用户去删对象，
+   * 多张标签可用色板一键统一；导出时由 PDF/PNG 链路按纸张铺底（见 setPaperColor 注释）。
+   */
+  const handlePaperColorChange = useCallback((hex: string) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.setPaperColor(ctrl.activePaperId(), hex)
+    // 面板上的纸张列表要同步（含底色），否则切标签后色板高亮会停在旧值
+    setPapers(ctrl.listPapers())
+  }, [])
+
   // ── 属性操作 ────────────────────────────────────────────
   const onGeometry = useCallback(
     (patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle'>>) => {
@@ -1207,6 +1226,31 @@ export default function App() {
     [zoomTo100],
   )
 
+  /**
+   * 从模板库选一个「多零」通用模板：与上面同一套落盘规则，差别只在
+   * ① 规格由 buildY56ySpec 直接给出（数据已是 mm/pt，无需换算）；
+   * ② 模板可能内嵌矢量图标/位图，要先异步把资源解析好再落画布。
+   */
+  const onPickY56yTemplate = useCallback(
+    (tpl: Y56yTemplate) => {
+      const ctrl = ctrlRef.current
+      if (!ctrl) return
+      const spec = buildY56ySpec(tpl)
+      setLibraryOpen(false)
+      void ctrl.loadTemplateWithAssets(spec).then(() => {
+        setPaper({ widthMm: spec.widthMm, heightMm: spec.heightMm })
+        setActive(null)
+        setCurrentIndex(-1)
+        setUsedVariables([])
+        requestAnimationFrame(() => zoomTo100())
+        toast.success(`已载入模板「${tpl.name}」`, {
+          description: `${spec.widthMm}×${spec.heightMm}mm · ${spec.categoryName} · ${spec.nodes.length} 个元素`,
+        })
+      })
+    },
+    [zoomTo100],
+  )
+
   const onExportJson = useCallback(() => {
     const ctrl = ctrlRef.current
     if (!ctrl) return
@@ -1516,6 +1560,7 @@ export default function App() {
         onImportJson={onImportJson}
         onExportJson={onExportJson}
         onOpenLibrary={() => setLibraryOpen(true)}
+        onOpenHelp={() => setHelpOpen(true)}
         onUndo={onUndo}
         onRedo={onRedo}
         canUndo={history.canUndo}
@@ -1797,6 +1842,8 @@ export default function App() {
           <PropertyPanel
             paper={paper}
             onPaperChange={handlePaperChange}
+            paperColor={papers.find((p) => p.id === activePaperId)?.bgColor ?? '#ffffff'}
+            onPaperColorChange={handlePaperColorChange}
             active={active}
             usedVariables={usedVariables}
             objectNames={objectNames}
@@ -1851,6 +1898,8 @@ export default function App() {
               <PropertyPanel
                 paper={paper}
                 onPaperChange={handlePaperChange}
+                paperColor={papers.find((p) => p.id === activePaperId)?.bgColor ?? '#ffffff'}
+                onPaperColorChange={handlePaperColorChange}
                 active={active}
                 usedVariables={usedVariables}
                 objectNames={objectNames}
@@ -1931,7 +1980,10 @@ export default function App() {
         open={libraryOpen}
         onOpenChange={setLibraryOpen}
         onPick={onPickLibraryTemplate}
+        onPickY56y={onPickY56yTemplate}
       />
+
+      <HelpCenter open={helpOpen} onOpenChange={setHelpOpen} />
 
       <Toaster richColors position="top-center" />
     </div>

@@ -121,7 +121,11 @@ function collect(dir, shouldSkip) {
     const key = path.relative(DIST, full).split(path.sep).join('/')
     if (EXT_BIN.has(ext)) {
       BIN[key] = fs.readFileSync(full).toString('base64')
-    } else if (ext === '.json') {
+    } else if (ext === '.json' || ext === '.svg') {
+      // SVG 是 UTF-8 文本，按字符串内联即可（拦截器会按扩展名给出 image/svg+xml）。
+      // ⚠️ 早期只收 .json，于是模板库里 103 个矢量图标在离线包中**静默消失** ——
+      // 打开模板库时图标全空、还看不到任何报错（拦截器对未入表的 key 返回 404 空响应）。
+      // 新增资源类型时必须同步 EXT_BIN / 这里 / 拦截器 typeOf 三处。
       TEXT[key] = fs.readFileSync(full, 'utf8')
     }
   }
@@ -312,6 +316,40 @@ const appAt = html.indexOf('window.__OFFLINE_ASSETS__')
 if (shimAt >= 0 && appAt >= 0 && shimAt > html.indexOf('<script type="module">', appAt)) {
   problems.push('拦截器注入顺序错误')
 }
+
+// 资源覆盖：dist 里**每个**运行时可能被 fetch 的文件都必须进资源表。
+// 起因：collect 曾只认 .json，模板库的 103 个 .svg 图标静默消失，而拦截器对
+// 未入表的 key 只返回 404 空响应 —— 界面表现为"图标全空但不报错"，极难反查。
+{
+  const RUNTIME_EXT = new Set([...EXT_BIN, '.json', '.svg'])
+  const real = []
+  const walk = (dir) => {
+    if (!fs.existsSync(dir)) return
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name)
+      if (fs.statSync(full).isDirectory()) {
+        if (LITE && (full === ktmDir || full === path.join(ktmDir, 'raster'))) continue
+        walk(full)
+        continue
+      }
+      if (RUNTIME_EXT.has(path.extname(name).toLowerCase())) {
+        real.push(path.relative(DIST, full).split(path.sep).join('/'))
+      }
+    }
+  }
+  walk(path.join(DIST, 'assets'))
+  walk(path.join(DIST, 'fonts'))
+  const missing = real.filter((k) => {
+    if (LITE && /^assets\/ktm\/c\d+\.json$/.test(k)) return false // 精简版有意剔除
+    return !(k in TEXT) && !(k in BIN)
+  })
+  if (missing.length) {
+    problems.push(`有 ${missing.length} 个资源未内联（示例：${missing.slice(0, 3).join(', ')}）`)
+  } else {
+    log(`  资源覆盖：dist 下 ${real.length} 个可 fetch 文件全部入表`)
+  }
+}
+
 if (problems.length) {
   log('')
   log('✗ 自检未通过：')

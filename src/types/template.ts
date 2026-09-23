@@ -27,6 +27,13 @@ export interface PaperArea {
   heightMm: number
   left: number
   top: number
+  /**
+   * 纸张底色（画布可见 **且会打印/导出**）。
+   * · 缺省 / `#ffffff` → 白底（导出时跳过铺底，PDF 体积更小）
+   * · `transparent` → 不铺底色（导出成品透明，画布上仍以白色示人以便区分纸张）
+   * · 其它 #rrggbb → 反色/彩底标签（黑底白字、黄底警示等）
+   */
+  bgColor?: string
 }
 
 /** 多标签批量输出时的页序：按套（A1 B1 A2 B2）/ 按标签（A1 A2 B1 B2） */

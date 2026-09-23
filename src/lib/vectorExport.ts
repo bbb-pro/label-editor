@@ -929,6 +929,17 @@ export async function buildVectorPdf(
         doc.addPage([sizeMm.widthMm, sizeMm.heightMm], sizeMm.widthMm >= sizeMm.heightMm ? 'landscape' : 'portrait')
       }
       applyState(index)
+      // 纸张底色（黑底白字 / 黄底警示等彩底标签）：作为该页最底层铺满整张纸。
+      // 白底与透明底直接跳过 —— 不产生多余绘图指令，普通标签的 PDF 保持精简。
+      // 注意此刻坐标原点已被 setOrigin 移到本页纸张左上角，所以是 (0,0,W,H)。
+      const bgHex = pa?.bgColor
+      if (bgHex && bgHex !== '#ffffff' && bgHex !== 'transparent') {
+        const rgb = parseColor(bgHex)
+        if (rgb) {
+          doc.setFillColor(rgb[0], rgb[1], rgb[2])
+          doc.rect(0, 0, sizeMm.widthMm, sizeMm.heightMm, 'F')
+        }
+      }
       for (const o of flattenLeaves(controller)) {
         // 只画落在本页这张纸内的对象，避免把别的标签内容画进来
         if (pa && !controller.isObjectInPaperId(o, pa.id)) continue

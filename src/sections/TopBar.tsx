@@ -11,6 +11,7 @@ import {
   Undo2,
   Redo2,
   LayoutTemplate,
+  CircleHelp,
 } from 'lucide-react'
 
 interface TopBarProps {
@@ -23,6 +24,8 @@ interface TopBarProps {
   onExportJson: () => void
   /** 打开模板库（公开行业模板，点选即新建） */
   onOpenLibrary: () => void
+  /** 打开使用帮助 */
+  onOpenHelp: () => void
   onUndo: () => void
   onRedo: () => void
   canUndo: boolean
@@ -42,6 +45,7 @@ export default function TopBar(props: TopBarProps) {
     onImportJson,
     onExportJson,
     onOpenLibrary,
+    onOpenHelp,
     onUndo,
     onRedo,
     canUndo,
@@ -118,10 +122,14 @@ export default function TopBar(props: TopBarProps) {
         variant="ghost"
         size="sm"
         onClick={onOpenLibrary}
-        title="模板库：食品 / 电商 / 仓储 / 医药 / 资产 / 服装吊牌等现成版式"
+        title="模板库：行业模板（食品 / 电商 / 仓储 / 医药 / 资产 / 服装吊牌）+ 通用模板（跨境电商 GPSR / FBA / GS1 等）"
       >
         <LayoutTemplate className="mr-1 h-4 w-4" />
         <span className="hidden lg:inline">模板库</span>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onOpenHelp} title="使用帮助（制作 / 数据绑定 / 条码 / 导出打印）">
+        <CircleHelp className="mr-1 h-4 w-4" />
+        <span className="hidden lg:inline">帮助</span>
       </Button>
 
       <div className="flex-1" />

@@ -4,7 +4,7 @@
 // 条码区域），直接映射成 SVG 基本图元即可，既零请求又永远与真实落盘结果一致。
 // 缩略图只求"一眼认出是哪种标签"，所以条码/二维码用确定性的伪随机图案示意
 // （seed 取自内容，同一模板每次渲染都一样），不真的去调 bwip-js 编码。
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Dialog,
   DialogContent,
@@ -12,31 +12,104 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { LayoutTemplate } from 'lucide-react'
+import { LayoutTemplate, Search } from 'lucide-react'
 import {
   TEMPLATE_LIBRARY,
   TPL_CATEGORIES,
   categoryNameOf,
   type LibTemplate,
   type TplCategory,
+  type TplNode,
 } from '@/lib/templateLibrary'
+import {
+  loadY56yLibrary,
+  type Y56yLibrary,
+  type Y56yTemplate,
+} from '@/lib/templateLibraryY56y'
 
 interface TemplateLibraryProps {
   open: boolean
   onOpenChange: (v: boolean) => void
   /** 选中某个模板（由 App 负责落盘 + 提示） */
   onPick: (tpl: LibTemplate) => void
+  /** 选中「多零」通用模板（数据量大，需异步备图资源） */
+  onPickY56y: (tpl: Y56yTemplate) => void
 }
 
 type Filter = 'all' | TplCategory
+/** 两套模板源：内置行业模板（transkoi 口径） / 通用模板（y56y 口径） */
+type Source = 'builtin' | 'y56y'
 
-export default function TemplateLibrary({ open, onOpenChange, onPick }: TemplateLibraryProps) {
+export default function TemplateLibrary({
+  open,
+  onOpenChange,
+  onPick,
+  onPickY56y,
+}: TemplateLibraryProps) {
+  const [source, setSource] = useState<Source>('builtin')
   const [filter, setFilter] = useState<Filter>('all')
+  const [lib, setLib] = useState<Y56yLibrary | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [yCat, setYCat] = useState<number | 'all'>('all')
+  const [q, setQ] = useState('')
+
+  // 切到「通用模板」时才按需拉取那 294 个模板（约 810KB，不进首屏）
+  useEffect(() => {
+    if (!open || source !== 'y56y' || lib) return
+    let alive = true
+    const run = async () => {
+      try {
+        const data = await loadY56yLibrary()
+        if (alive) setLib(data)
+      } catch (e) {
+        if (alive) setLoadErr(e instanceof Error ? e.message : '模板数据加载失败')
+      }
+    }
+    void run()
+    return () => {
+      alive = false
+    }
+  }, [open, source, lib])
 
   const list = useMemo(
     () => (filter === 'all' ? TEMPLATE_LIBRARY : TEMPLATE_LIBRARY.filter((t) => t.industry === filter)),
     [filter],
   )
+
+  const yList = useMemo(() => {
+    if (!lib) return []
+    const kw = q.trim().toLowerCase()
+    return lib.templates.filter(
+      (t) =>
+        (yCat === 'all' || t.catId === yCat) &&
+        (!kw || t.name.toLowerCase().includes(kw) || t.id.toLowerCase().includes(kw)),
+    )
+  }, [lib, yCat, q])
+
+  const yCountByCat = useMemo(() => {
+    const m = new Map<number, number>()
+    for (const t of lib?.templates ?? []) {
+      if (t.catId == null) continue
+      m.set(t.catId, (m.get(t.catId) ?? 0) + 1)
+    }
+    return m
+  }, [lib])
+
+  /** 按站点分组（通用 / 跨境电商 / GS1）分栏呈现 —— 源站有两个同名分类「文字标识」，
+   *  只有带上分组才分得清；顺便也让 22 个分类筛选条更好找。 */
+  const yGroups = useMemo(() => {
+    const out: { name: string; cats: { id: number; name: string }[] }[] = []
+    for (const c of lib?.categories ?? []) {
+      const name = c.groupName || '其他'
+      let g = out.find((x) => x.name === name)
+      if (!g) {
+        g = { name, cats: [] }
+        out.push(g)
+      }
+      g.cats.push({ id: c.id, name: c.name })
+    }
+    return out
+  }, [lib])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -47,55 +120,163 @@ export default function TemplateLibrary({ open, onOpenChange, onPick }: Template
             模板库
           </DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
-            点选一个模板即按它的尺寸与版式新建标签（当前画布内容会被替换，可用 Ctrl+Z 撤销）。
-            共 {TEMPLATE_LIBRARY.length} 个行业模板。
+            {source === 'builtin'
+              ? `点选一个模板即按它的尺寸与版式新建标签（当前画布内容会被替换，可用 Ctrl+Z 撤销）。共 ${TEMPLATE_LIBRARY.length} 个行业模板。`
+              : `通用标签模板：跨境电商 / GPSR / FBA / GS1 / 仓储物流等成套版式，共 ${lib?.templates.length ?? 294} 个，含矢量图标与条码占位，可一键套用后自行改文案。`}
           </DialogDescription>
         </DialogHeader>
 
-        {/* 行业筛选 */}
-        <div className="flex flex-wrap gap-1">
-          <Chip active={filter === 'all'} onClick={() => setFilter('all')}>
-            全部 {TEMPLATE_LIBRARY.length}
-          </Chip>
-          {TPL_CATEGORIES.map((c) => {
-            const n = TEMPLATE_LIBRARY.filter((t) => t.industry === c.code).length
-            return (
-              <Chip key={c.code} active={filter === c.code} onClick={() => setFilter(c.code)}>
-                {c.name} {n}
-              </Chip>
-            )
-          })}
+        {/* 模板来源切换 */}
+        <div className="flex gap-1 rounded-lg bg-muted p-1">
+          <SourceTab active={source === 'builtin'} onClick={() => setSource('builtin')}>
+            行业模板 {TEMPLATE_LIBRARY.length}
+          </SourceTab>
+          <SourceTab active={source === 'y56y'} onClick={() => setSource('y56y')}>
+            通用模板 {lib?.templates.length ?? 294}
+          </SourceTab>
         </div>
 
-        {/* 模板网格 */}
-        <div className="-mx-1 max-h-[52vh] overflow-y-auto px-1 py-1">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {list.map((tpl) => (
-              <button
-                key={tpl.id}
-                type="button"
-                onClick={() => onPick(tpl)}
-                title={`使用「${tpl.name}」（${tpl.size}）`}
-                className="group flex flex-col gap-1.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-blue-500 hover:bg-blue-50/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-              >
-                <div className="flex h-24 items-center justify-center rounded-md bg-slate-100 p-1.5">
-                  <TemplateThumb tpl={tpl} />
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="truncate text-xs font-medium">{tpl.name}</span>
-                  <span className="ml-auto shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-                    {tpl.size}
+        {source === 'builtin' ? (
+          <>
+            {/* 行业筛选 */}
+            <div className="flex flex-wrap gap-1">
+              <Chip active={filter === 'all'} onClick={() => setFilter('all')}>
+                全部 {TEMPLATE_LIBRARY.length}
+              </Chip>
+              {TPL_CATEGORIES.map((c) => {
+                const n = TEMPLATE_LIBRARY.filter((t) => t.industry === c.code).length
+                return (
+                  <Chip key={c.code} active={filter === c.code} onClick={() => setFilter(c.code)}>
+                    {c.name} {n}
+                  </Chip>
+                )
+              })}
+            </div>
+
+            {/* 模板网格 */}
+            <div className="-mx-1 max-h-[52vh] overflow-y-auto px-1 py-1">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                {list.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => onPick(tpl)}
+                    title={`使用「${tpl.name}」（${tpl.size}）`}
+                    className="group flex flex-col gap-1.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-blue-500 hover:bg-blue-50/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  >
+                    <div className="flex h-24 items-center justify-center rounded-md bg-slate-100 p-1.5">
+                      <TemplateThumb tpl={tpl} />
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <span className="truncate text-xs font-medium">{tpl.name}</span>
+                      <span className="ml-auto shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                        {tpl.size}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {categoryNameOf(tpl.industry)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            {/* 搜索 + 分类筛选 */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="搜索模板名称（如 GPSR、FBA、洗涤、警示）"
+                  className="h-8 w-full rounded-md border bg-background pr-2 pl-7 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                />
+              </div>
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                {yList.length} / {lib?.templates.length ?? 0}
+              </span>
+            </div>
+
+            <div className="max-h-24 space-y-1 overflow-y-auto">
+              <div className="flex flex-wrap gap-1">
+                <Chip active={yCat === 'all'} onClick={() => setYCat('all')}>
+                  全部分类 {lib?.templates.length ?? 0}
+                </Chip>
+              </div>
+              {yGroups.map((g) => (
+                <div key={g.name} className="flex flex-wrap items-center gap-1">
+                  <span className="w-20 shrink-0 truncate text-[10px] text-muted-foreground">
+                    {g.name}
                   </span>
+                  {g.cats.map((c) => (
+                    <Chip key={c.id} active={yCat === c.id} onClick={() => setYCat(c.id)}>
+                      {c.name} {yCountByCat.get(c.id) ?? 0}
+                    </Chip>
+                  ))}
                 </div>
-                <div className="text-[10px] text-muted-foreground">
-                  {categoryNameOf(tpl.industry)}
+              ))}
+            </div>
+
+            <div className="-mx-1 max-h-[46vh] overflow-y-auto px-1 py-1">
+              {loadErr ? (
+                <div className="py-10 text-center text-xs text-destructive">{loadErr}</div>
+              ) : !lib ? (
+                <div className="py-10 text-center text-xs text-muted-foreground">模板数据加载中…</div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {yList.map((tpl) => (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      onClick={() => onPickY56y(tpl)}
+                      title={`使用「${tpl.name}」（${tpl.id} · ${tpl.size}）`}
+                      className="group flex flex-col gap-1.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-blue-500 hover:bg-blue-50/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                    >
+                      <div className="flex h-24 items-center justify-center rounded-md bg-slate-100 p-1.5">
+                        <Y56yThumb tpl={tpl} />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="truncate text-xs font-medium">{tpl.name}</span>
+                        <span className="ml-auto shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                          {tpl.size}
+                        </span>
+                      </div>
+                      <div className="truncate text-[10px] text-muted-foreground">{tpl.catName}</div>
+                    </button>
+                  ))}
                 </div>
-              </button>
-            ))}
-          </div>
-        </div>
+              )}
+            </div>
+          </>
+        )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** 模板来源的页签按钮 */
+function SourceTab({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'flex-1 rounded-md px-2 py-1 text-xs transition-colors ' +
+        (active ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground hover:text-foreground')
+      }
+    >
+      {children}
+    </button>
   )
 }
 
@@ -364,6 +545,158 @@ function TemplateThumb({ tpl }: { tpl: LibTemplate }) {
         <path d={paths.join('')} fill="#0f172a" />
         {texts}
       </g>
+    </svg>
+  )
+}
+
+// ── 缩略图（多零口径）：数据已是本项目原生单位（mm / pt / 度），直接映射 ──
+//
+// 与上面 TemplateThumb 的区别：那套是「原站单位换算」，这套不需要换算 ——
+// mm 直接当 SVG 用户单位用（viewBox 就是纸张 mm 尺寸），字号 pt 按 pt→mm 折算。
+// 图标节点用的是归一化后的真实 SVG 资源，直接 <image> 引进来，所见即所得。
+const PT_TO_MM = 25.4 / 72
+
+function Y56yThumb({ tpl }: { tpl: Y56yTemplate }) {
+  const { widthMm: W, heightMm: H } = tpl
+  const clipId = `y56-tpl-clip-${tpl.id}`
+
+  const renderNode = (n: TplNode, i: number) => {
+    const key = `${tpl.id}-${i}`
+    const rot = (deg: number | undefined, cx: number, cy: number) =>
+      deg ? `rotate(${deg} ${cx} ${cy})` : undefined
+    switch (n.kind) {
+      case 'text': {
+        const fsMm = n.fontSizePt * PT_TO_MM
+        const boxH = n.hMm ?? fsMm * 1.16
+        const cx = n.xMm + n.wMm / 2
+        const cy = n.yMm + boxH / 2
+        return (
+          <text
+            key={key}
+            x={n.align === 'center' ? cx : n.align === 'right' ? n.xMm + n.wMm : n.xMm}
+            y={n.yMm + boxH / 2 + fsMm * 0.36}
+            fontSize={fsMm}
+            fontWeight={n.bold ? 700 : 400}
+            fontStyle={n.italic ? 'italic' : undefined}
+            textDecoration={n.underline ? 'underline' : undefined}
+            letterSpacing={n.letterSpacingPt ? n.letterSpacingPt * PT_TO_MM : undefined}
+            textAnchor={n.align === 'center' ? 'middle' : n.align === 'right' ? 'end' : 'start'}
+            fill={n.color ?? '#000000'}
+            transform={rot(n.rotateDeg, cx, cy)}
+            style={{ whiteSpace: 'pre' }}
+          >
+            {n.text}
+          </text>
+        )
+      }
+      case 'barcode': {
+        const is2d = /qrcode|datamatrix|pdf417|aztec|maxicode|hanxin|dotcode|codeone/i.test(n.barcodeType)
+        const cx = n.xMm + n.wMm / 2
+        const cy = n.yMm + n.hMm / 2
+        return (
+          <g key={key} transform={rot(n.rotateDeg, cx, cy)}>
+            {is2d ? (
+              <path
+                d={qrPath(`${tpl.id}-${i}`, n.xMm, n.yMm, Math.min(n.wMm, n.hMm))}
+                fill={n.fgColor ?? '#000000'}
+              />
+            ) : (
+              <>
+                <path
+                  d={barcodePath(n.text, n.xMm, n.yMm, n.wMm, n.hMm, !!n.showText)}
+                  fill={n.fgColor ?? '#000000'}
+                />
+                {n.showText && (
+                  <text
+                    x={cx}
+                    y={n.yMm + n.hMm * 0.98}
+                    fontSize={Math.min(n.hMm * 0.22, n.wMm * 0.12)}
+                    textAnchor="middle"
+                    fill={n.fgColor ?? '#000000'}
+                  >
+                    {n.text}
+                  </text>
+                )}
+              </>
+            )}
+          </g>
+        )
+      }
+      case 'rect':
+        return (
+          <rect
+            key={key}
+            x={n.xMm}
+            y={n.yMm}
+            width={n.wMm}
+            height={n.hMm}
+            rx={n.radiusMm || undefined}
+            ry={n.radiusMm || undefined}
+            fill={n.filled ? n.fillColor ?? '#000000' : 'none'}
+            stroke={n.filled ? 'none' : n.strokeColor ?? '#000000'}
+            strokeWidth={n.filled ? 0 : Math.max(0.15, n.strokeMm)}
+            transform={rot(n.rotateDeg, n.xMm + n.wMm / 2, n.yMm + n.hMm / 2)}
+          />
+        )
+      case 'ellipse':
+        return (
+          <ellipse
+            key={key}
+            cx={n.cxMm}
+            cy={n.cyMm}
+            rx={n.rxMm}
+            ry={n.ryMm}
+            fill={n.filled ? n.fillColor ?? '#000000' : 'none'}
+            stroke={n.filled ? 'none' : n.strokeColor ?? '#000000'}
+            strokeWidth={n.filled ? 0 : Math.max(0.15, n.strokeMm ?? 0.3)}
+          />
+        )
+      case 'line':
+        return (
+          <line
+            key={key}
+            x1={n.x1Mm}
+            y1={n.y1Mm}
+            x2={n.x2Mm}
+            y2={n.y2Mm}
+            stroke={n.color ?? '#000000'}
+            strokeWidth={Math.max(0.15, n.strokeMm)}
+            strokeDasharray={n.dashed ? `${Math.max(0.3, n.strokeMm) * 3} ${Math.max(0.3, n.strokeMm) * 2}` : undefined}
+          />
+        )
+      case 'image':
+        return (
+          <image
+            key={key}
+            href={n.src}
+            x={n.xMm}
+            y={n.yMm}
+            width={n.wMm}
+            height={n.hMm}
+            preserveAspectRatio={n.keepAspect ? 'xMidYMid meet' : 'none'}
+            transform={rot(n.rotateDeg, n.xMm + n.wMm / 2, n.yMm + n.hMm / 2)}
+          />
+        )
+      default:
+        return null
+    }
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="max-h-full max-w-full"
+      style={{ aspectRatio: `${W} / ${H}` }}
+      role="img"
+      aria-label={`${tpl.name} 缩略图`}
+    >
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={0} y={0} width={W} height={H} />
+        </clipPath>
+      </defs>
+      <rect x={0} y={0} width={W} height={H} fill={tpl.bg || '#ffffff'} stroke="#e2e8f0" strokeWidth="0.25" />
+      <g clipPath={`url(#${clipId})`}>{tpl.nodes.map(renderNode)}</g>
     </svg>
   )
 }

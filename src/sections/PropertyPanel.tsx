@@ -53,6 +53,9 @@ import { cn } from '@/lib/utils'
 interface PropertyPanelProps {
   paper: PaperSize
   onPaperChange: (p: PaperSize) => void
+  /** 当前纸张底色（'#ffffff' = 白底；'transparent' = 导出不铺底） */
+  paperColor: string
+  onPaperColorChange: (hex: string) => void
   active: ActiveObject | null
   usedVariables: string[]
   /** 画布中其它内容对象的名称（用于插入引用） */
@@ -111,8 +114,33 @@ const SHAPE_META: Record<ShapeType, { label: string; Icon: typeof Layers }> = {
   star: { label: '五角星', Icon: StarIcon },
 }
 
+/**
+ * 纸张底色预设。取的是标签行业常见底色：白（默认）、透明、黑（黑底白字反色标）、
+ * 黄（警示/促销）、橙红、绿、蓝、浅灰，另配一个自由取色入口。
+ */
+const PAPER_COLOR_PRESETS: Array<{ value: string; label: string }> = [
+  { value: '#ffffff', label: '白' },
+  { value: 'transparent', label: '透明' },
+  { value: '#000000', label: '黑' },
+  { value: '#ffe300', label: '黄' },
+  { value: '#f94611', label: '橙红' },
+  { value: '#008501', label: '绿' },
+  { value: '#0080c7', label: '蓝' },
+  { value: '#e4e4e4', label: '浅灰' },
+]
+
+/** 「透明」色块的斜纹底（纯 CSS，避免引入图片） */
+const TRANSPARENT_SWATCH = {
+  backgroundImage:
+    'linear-gradient(45deg,#cbd5e1 25%,transparent 25%,transparent 75%,#cbd5e1 75%),' +
+    'linear-gradient(45deg,#cbd5e1 25%,transparent 25%,transparent 75%,#cbd5e1 75%)',
+  backgroundSize: '6px 6px',
+  backgroundPosition: '0 0,3px 3px',
+  backgroundColor: '#ffffff',
+} as const
+
 export default function PropertyPanel(props: PropertyPanelProps) {
-  const { paper, active, bare } = props
+  const { paper, active, bare, paperColor } = props
   const inner = (
     <>
       <Section title="纸张设置">
@@ -135,6 +163,51 @@ export default function PropertyPanel(props: PropertyPanelProps) {
         <p className="pt-1 text-[11px] leading-relaxed text-muted-foreground">
           默认 {DEFAULT_PAPER.widthMm} × {DEFAULT_PAPER.heightMm} mm · 提示：修改后立即应用到画布。
         </p>
+
+        <div className="space-y-1.5 pt-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium text-muted-foreground">底色</span>
+            <label className="flex cursor-pointer items-center gap-1 text-[10px] text-muted-foreground">
+              <span
+                className="inline-block h-4 w-5 rounded border"
+                style={
+                  paperColor === 'transparent'
+                    ? TRANSPARENT_SWATCH
+                    : { backgroundColor: paperColor }
+                }
+              />
+              <input
+                type="color"
+                value={paperColor === 'transparent' ? '#ffffff' : paperColor}
+                onChange={(e) => props.onPaperColorChange(e.target.value)}
+                className="h-0 w-0 opacity-0"
+                tabIndex={-1}
+              />
+              自定义
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {PAPER_COLOR_PRESETS.map((c) => {
+              const active = paperColor === c.value
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  title={`纸张底色：${c.label}`}
+                  onClick={() => props.onPaperColorChange(c.value)}
+                  style={c.value === 'transparent' ? TRANSPARENT_SWATCH : { backgroundColor: c.value }}
+                  className={
+                    'h-5 w-5 rounded border transition-shadow ' +
+                    (active ? 'ring-2 ring-blue-500 ring-offset-1' : 'hover:ring-1 hover:ring-border')
+                  }
+                />
+              )
+            })}
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            底色随标签一起打印/导出（不占用图层，可在多张标签间沿用）。选「透明」则导出无背景。
+          </p>
+        </div>
       </Section>
 
       {active ? (
@@ -378,7 +451,10 @@ function SelectedObjectPanel({
   onStrokeColorChange,
   onFillColorChange,
   onTextRegionChange,
-}: Omit<PropertyPanelProps, 'active' | 'paper' | 'onPaperChange' | 'objectCount' | 'currentRow'> & {
+}: Omit<
+  PropertyPanelProps,
+  'active' | 'paper' | 'onPaperChange' | 'paperColor' | 'onPaperColorChange' | 'objectCount' | 'currentRow'
+> & {
   active: ActiveObject
 }) {
   const meta = kindMeta[active.kind]

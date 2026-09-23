@@ -15,6 +15,13 @@ offline-dist
 # Local project memory / config (not source)
 .workbuddy
 
+# 一次性抓取/调试的中间产物（模板原始 JSON、预览 SVG、探针脚本、静态服务器日志）
+# 体积大且可重生成：scripts/y56y/*.mjs 随时能重新抓取并转换
+.tmp
+
+# 一次性调试探针（scripts/y56y/ 下的正式工具脚本仍入库）
+scripts/probe-*.js
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

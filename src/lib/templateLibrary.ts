@@ -910,7 +910,11 @@ export const TEMPLATE_LIBRARY: LibTemplate[] = [
   }
 ]
 
-// ── 转换后的「可落画布」规格（我们的原生口径：mm / pt） ──────
+// ── 转换后的「可落画布」规格（我们的原生口径：mm / pt / 度） ──────
+//
+// 可选字段都是**为兼容第二套模板源（y56y.com 通用模板）而加**的：那一套模板
+// 带颜色、旋转、字距、线宽与图形，原 transkoi 模板只用黑白色与轴对齐，所以
+// 这些字段全部可选、缺省即原行为，老模板与老序列化数据不受影响。
 
 export type TplTextAlign = 'left' | 'center' | 'right'
 
@@ -923,6 +927,21 @@ export interface TplTextNode {
   fontSizePt: number
   bold: boolean
   align: TplTextAlign
+  /** 元素声明高度(mm)。仅旋转节点需要：旋转绕「元素框中心」，须知道框高 */
+  hMm?: number
+  /** 文字颜色，缺省黑色 */
+  color?: string
+  /** 旋转角（度，顺时针），缺省 0 */
+  rotateDeg?: number
+  /** 字距（pt），缺省 0 */
+  letterSpacingPt?: number
+  /** 多行文本框（原站 textarea）：按框宽自动折行，行高为字号的倍数 */
+  multiline?: boolean
+  lineHeight?: number
+  /** 斜体 */
+  italic?: boolean
+  /** 下划线 */
+  underline?: boolean
 }
 export interface TplBarcodeNode {
   kind: 'barcode'
@@ -932,6 +951,13 @@ export interface TplBarcodeNode {
   hMm: number
   barcodeType: BarcodeType
   text: string
+  /** 是否显示一维码的人读文字，缺省按码制推断 */
+  showText?: boolean
+  fgColor?: string
+  bgColor?: string
+  /** QR 系码制的容错等级 */
+  eccLevel?: 'L' | 'M' | 'Q' | 'H'
+  rotateDeg?: number
 }
 /** 矩形：filled=true 为实心色块（表格分隔条），否则为描边空心框 */
 export interface TplRectNode {
@@ -943,8 +969,62 @@ export interface TplRectNode {
   /** 描边宽(mm)；filled 时忽略 */
   strokeMm: number
   filled: boolean
+  fillColor?: string
+  strokeColor?: string
+  /** 圆角半径(mm) */
+  radiusMm?: number
+  rotateDeg?: number
 }
-export type TplNode = TplTextNode | TplBarcodeNode | TplRectNode
+/** 直线：x1/y1 → x2/y2（mm） */
+export interface TplLineNode {
+  kind: 'line'
+  x1Mm: number
+  y1Mm: number
+  x2Mm: number
+  y2Mm: number
+  strokeMm: number
+  color?: string
+  /** 点线（原站 lineType≠0 / type=2） */
+  dashed?: boolean
+}
+/** 椭圆：圆心 + 半径（mm） */
+export interface TplEllipseNode {
+  kind: 'ellipse'
+  cxMm: number
+  cyMm: number
+  rxMm: number
+  ryMm: number
+  filled: boolean
+  fillColor?: string
+  strokeMm?: number
+  strokeColor?: string
+}
+/**
+ * 位图 / 矢量图标：`src` 是相对 `assets/templates/` 的文件名，
+ * 由引擎在载入前预解析（见 CanvasController.prepareTemplateAssets）。
+ */
+export interface TplImageNode {
+  kind: 'image'
+  xMm: number
+  yMm: number
+  wMm: number
+  hMm: number
+  /** 文件名，相对 public/assets/templates/ */
+  src: string
+  /** true → 走矢量（fabric.loadSVGFromString），false → 位图 */
+  vector?: boolean
+  rotateDeg?: number
+  /** 按原始宽高比缩放（不拉伸） */
+  keepAspect?: boolean
+}
+export type TplNode =
+  | TplTextNode
+  | TplBarcodeNode
+  | TplRectNode
+  | TplLineNode
+  | TplEllipseNode
+  | TplImageNode
+
 
 export interface TemplateSpec {
   /** 模板名（同时用作纸张名称） */
@@ -952,6 +1032,8 @@ export interface TemplateSpec {
   categoryName: string
   widthMm: number
   heightMm: number
+  /** 纸张底色（缺省 / '#ffffff' = 白底）。反色、警示底等彩底模板用它而非背景矩形节点。 */
+  bgColor?: string
   nodes: TplNode[]
 }
 
