@@ -13,32 +13,22 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { LayoutTemplate, Search } from 'lucide-react'
-import {
-  TEMPLATE_LIBRARY,
-  TPL_CATEGORIES,
-  categoryNameOf,
-  type LibTemplate,
-  type TplCategory,
-  type TplNode,
-} from '@/lib/templateLibrary'
+import { type LibTemplate, type TplNode } from '@/lib/templateLibrary'
 import {
   loadY56yLibrary,
   type Y56yLibrary,
   type Y56yTemplate,
 } from '@/lib/templateLibraryY56y'
+import { mergeLibrary, type MergedItem } from '@/lib/templateLibraryMerged'
 
 interface TemplateLibraryProps {
   open: boolean
   onOpenChange: (v: boolean) => void
-  /** 选中某个模板（由 App 负责落盘 + 提示） */
+  /** 选中内置行业模板（由 App 负责落盘 + 提示） */
   onPick: (tpl: LibTemplate) => void
   /** 选中「多零」通用模板（数据量大，需异步备图资源） */
   onPickY56y: (tpl: Y56yTemplate) => void
 }
-
-type Filter = 'all' | TplCategory
-/** 两套模板源：内置行业模板（transkoi 口径） / 通用模板（y56y 口径） */
-type Source = 'builtin' | 'y56y'
 
 export default function TemplateLibrary({
   open,
@@ -46,21 +36,22 @@ export default function TemplateLibrary({
   onPick,
   onPickY56y,
 }: TemplateLibraryProps) {
-  const [source, setSource] = useState<Source>('builtin')
-  const [filter, setFilter] = useState<Filter>('all')
   const [lib, setLib] = useState<Y56yLibrary | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
-  const [yCat, setYCat] = useState<number | 'all'>('all')
+  const [catId, setCatId] = useState<number | 'all'>('all')
   const [q, setQ] = useState('')
 
-  // 切到「通用模板」时才按需拉取那 294 个模板（约 810KB，不进首屏）
+  // 打开对话框时才拉通用模板（约 810KB，不进首屏）；载入后模块内有缓存，再打开即瞬时
   useEffect(() => {
-    if (!open || source !== 'y56y' || lib) return
+    if (!open || lib) return
     let alive = true
     const run = async () => {
       try {
         const data = await loadY56yLibrary()
-        if (alive) setLib(data)
+        if (alive) {
+          setLib(data)
+          setLoadErr(null)
+        }
       } catch (e) {
         if (alive) setLoadErr(e instanceof Error ? e.message : '模板数据加载失败')
       }
@@ -69,47 +60,44 @@ export default function TemplateLibrary({
     return () => {
       alive = false
     }
-  }, [open, source, lib])
+  }, [open, lib])
 
-  const list = useMemo(
-    () => (filter === 'all' ? TEMPLATE_LIBRARY : TEMPLATE_LIBRARY.filter((t) => t.industry === filter)),
-    [filter],
-  )
+  // 两套模板源在这里合成一套分类 + 一个列表。
+  // 通用模板还没 fetch 完时 items 只有 12 个内置模板 —— 对话框不至于空等。
+  const { categories, items, counts } = useMemo(() => mergeLibrary(lib), [lib])
 
-  const yList = useMemo(() => {
-    if (!lib) return []
+  const list = useMemo(() => {
     const kw = q.trim().toLowerCase()
-    return lib.templates.filter(
+    return items.filter(
       (t) =>
-        (yCat === 'all' || t.catId === yCat) &&
-        (!kw || t.name.toLowerCase().includes(kw) || t.id.toLowerCase().includes(kw)),
+        (catId === 'all' || t.catId === catId) &&
+        (!kw ||
+          t.name.toLowerCase().includes(kw) ||
+          t.key.toLowerCase().includes(kw) ||
+          t.catName.toLowerCase().includes(kw)),
     )
-  }, [lib, yCat, q])
+  }, [items, catId, q])
 
-  const yCountByCat = useMemo(() => {
-    const m = new Map<number, number>()
-    for (const t of lib?.templates ?? []) {
-      if (t.catId == null) continue
-      m.set(t.catId, (m.get(t.catId) ?? 0) + 1)
-    }
-    return m
-  }, [lib])
-
-  /** 按站点分组（通用 / 跨境电商 / GS1）分栏呈现 —— 源站有两个同名分类「文字标识」，
-   *  只有带上分组才分得清；顺便也让 22 个分类筛选条更好找。 */
-  const yGroups = useMemo(() => {
+  /** 分类按站点分组分栏呈现 —— 源站有两个同名分类「文字标识」，只有带分组才分得清；
+   *  本项目新开的分类自成一栏。 */
+  const groups = useMemo(() => {
     const out: { name: string; cats: { id: number; name: string }[] }[] = []
-    for (const c of lib?.categories ?? []) {
-      const name = c.groupName || '其他'
-      let g = out.find((x) => x.name === name)
+    for (const c of categories) {
+      let g = out.find((x) => x.name === c.groupName)
       if (!g) {
-        g = { name, cats: [] }
+        g = { name: c.groupName, cats: [] }
         out.push(g)
       }
       g.cats.push({ id: c.id, name: c.name })
     }
     return out
-  }, [lib])
+  }, [categories])
+
+  /** 两套源的落盘路径不同，在这里分派 */
+  const pickItem = (it: MergedItem) => {
+    if (it.src === 'builtin' && it.builtin) onPick(it.builtin)
+    else if (it.y56y) onPickY56y(it.y56y)
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -120,166 +108,97 @@ export default function TemplateLibrary({
             模板库
           </DialogTitle>
           <DialogDescription className="text-xs leading-relaxed">
-            {source === 'builtin'
-              ? `点选一个模板即按它的尺寸与版式新建标签（当前画布内容会被替换，可用 Ctrl+Z 撤销）。共 ${TEMPLATE_LIBRARY.length} 个行业模板。`
-              : `通用标签模板：跨境电商 / GPSR / FBA / GS1 / 仓储物流等成套版式，共 ${lib?.templates.length ?? 294} 个，含矢量图标与条码占位，可一键套用后自行改文案。`}
+            {lib
+              ? `点选一个模板即按它的尺寸与版式新建标签（当前画布内容会被替换，可用 Ctrl+Z 撤销）。共 ${items.length} 个模板、${categories.length} 个分类，含矢量图标与条码占位，可一键套用后自行改文案。`
+              : '点选一个模板即按它的尺寸与版式新建标签（当前画布内容会被替换，可用 Ctrl+Z 撤销）。正在载入模板库…'}
           </DialogDescription>
         </DialogHeader>
 
-        {/* 模板来源切换 */}
-        <div className="flex gap-1 rounded-lg bg-muted p-1">
-          <SourceTab active={source === 'builtin'} onClick={() => setSource('builtin')}>
-            行业模板 {TEMPLATE_LIBRARY.length}
-          </SourceTab>
-          <SourceTab active={source === 'y56y'} onClick={() => setSource('y56y')}>
-            通用模板 {lib?.templates.length ?? 294}
-          </SourceTab>
+        {/* 搜索 + 分类筛选 */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="搜索模板名称（如 GPSR、FBA、快递、洗涤、警示）"
+              className="h-8 w-full rounded-md border bg-background pr-2 pl-7 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+            />
+          </div>
+          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+            {list.length} / {items.length}
+          </span>
         </div>
 
-        {source === 'builtin' ? (
-          <>
-            {/* 行业筛选 */}
-            <div className="flex flex-wrap gap-1">
-              <Chip active={filter === 'all'} onClick={() => setFilter('all')}>
-                全部 {TEMPLATE_LIBRARY.length}
-              </Chip>
-              {TPL_CATEGORIES.map((c) => {
-                const n = TEMPLATE_LIBRARY.filter((t) => t.industry === c.code).length
-                return (
-                  <Chip key={c.code} active={filter === c.code} onClick={() => setFilter(c.code)}>
-                    {c.name} {n}
-                  </Chip>
-                )
-              })}
+        <div className="max-h-24 space-y-1 overflow-y-auto">
+          <div className="flex flex-wrap gap-1">
+            <Chip active={catId === 'all'} onClick={() => setCatId('all')}>
+              全部分类 {items.length}
+            </Chip>
+          </div>
+          {groups.map((g) => (
+            <div key={g.name} className="flex flex-wrap items-center gap-1">
+              <span className="w-20 shrink-0 truncate text-[10px] text-muted-foreground" title={g.name}>
+                {g.name}
+              </span>
+              {g.cats.map((c) => (
+                <Chip key={c.id} active={catId === c.id} onClick={() => setCatId(c.id)}>
+                  {c.name} {counts.get(c.id) ?? 0}
+                </Chip>
+              ))}
             </div>
+          ))}
+        </div>
 
-            {/* 模板网格 */}
-            <div className="-mx-1 max-h-[52vh] overflow-y-auto px-1 py-1">
+        <div className="-mx-1 max-h-[46vh] overflow-y-auto px-1 py-1">
+          {loadErr ? (
+            <div className="py-10 text-center text-xs text-destructive">{loadErr}</div>
+          ) : (
+            <>
+              {!lib && (
+                <div className="pb-2 text-center text-[11px] text-muted-foreground">
+                  正在载入通用模板…以下为随程序内置的行业模板
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {list.map((tpl) => (
+                {list.map((it) => (
                   <button
-                    key={tpl.id}
+                    key={it.key}
                     type="button"
-                    onClick={() => onPick(tpl)}
-                    title={`使用「${tpl.name}」（${tpl.size}）`}
+                    onClick={() => pickItem(it)}
+                    title={
+                      it.y56y
+                        ? `使用「${it.name}」（${it.y56y.id} · ${it.size}）`
+                        : `使用「${it.name}」（${it.size}）`
+                    }
                     className="group flex flex-col gap-1.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-blue-500 hover:bg-blue-50/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                   >
                     <div className="flex h-24 items-center justify-center rounded-md bg-slate-100 p-1.5">
-                      <TemplateThumb tpl={tpl} />
+                      {it.builtin ? (
+                        <TemplateThumb tpl={it.builtin} />
+                      ) : it.y56y ? (
+                        <Y56yThumb tpl={it.y56y} />
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1">
-                      <span className="truncate text-xs font-medium">{tpl.name}</span>
+                      <span className="truncate text-xs font-medium">{it.name}</span>
                       <span className="ml-auto shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-                        {tpl.size}
+                        {it.size}
                       </span>
                     </div>
-                    <div className="text-[10px] text-muted-foreground">
-                      {categoryNameOf(tpl.industry)}
-                    </div>
+                    <div className="truncate text-[10px] text-muted-foreground">{it.catName}</div>
                   </button>
                 ))}
               </div>
-            </div>
-          </>
-        ) : (
-          <>
-            {/* 搜索 + 分类筛选 */}
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  placeholder="搜索模板名称（如 GPSR、FBA、洗涤、警示）"
-                  className="h-8 w-full rounded-md border bg-background pr-2 pl-7 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-                />
-              </div>
-              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                {yList.length} / {lib?.templates.length ?? 0}
-              </span>
-            </div>
-
-            <div className="max-h-24 space-y-1 overflow-y-auto">
-              <div className="flex flex-wrap gap-1">
-                <Chip active={yCat === 'all'} onClick={() => setYCat('all')}>
-                  全部分类 {lib?.templates.length ?? 0}
-                </Chip>
-              </div>
-              {yGroups.map((g) => (
-                <div key={g.name} className="flex flex-wrap items-center gap-1">
-                  <span className="w-20 shrink-0 truncate text-[10px] text-muted-foreground">
-                    {g.name}
-                  </span>
-                  {g.cats.map((c) => (
-                    <Chip key={c.id} active={yCat === c.id} onClick={() => setYCat(c.id)}>
-                      {c.name} {yCountByCat.get(c.id) ?? 0}
-                    </Chip>
-                  ))}
-                </div>
-              ))}
-            </div>
-
-            <div className="-mx-1 max-h-[46vh] overflow-y-auto px-1 py-1">
-              {loadErr ? (
-                <div className="py-10 text-center text-xs text-destructive">{loadErr}</div>
-              ) : !lib ? (
-                <div className="py-10 text-center text-xs text-muted-foreground">模板数据加载中…</div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {yList.map((tpl) => (
-                    <button
-                      key={tpl.id}
-                      type="button"
-                      onClick={() => onPickY56y(tpl)}
-                      title={`使用「${tpl.name}」（${tpl.id} · ${tpl.size}）`}
-                      className="group flex flex-col gap-1.5 rounded-lg border bg-card p-2 text-left transition-colors hover:border-blue-500 hover:bg-blue-50/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-                    >
-                      <div className="flex h-24 items-center justify-center rounded-md bg-slate-100 p-1.5">
-                        <Y56yThumb tpl={tpl} />
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="truncate text-xs font-medium">{tpl.name}</span>
-                        <span className="ml-auto shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] tabular-nums text-muted-foreground">
-                          {tpl.size}
-                        </span>
-                      </div>
-                      <div className="truncate text-[10px] text-muted-foreground">{tpl.catName}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )
 }
 
-/** 模板来源的页签按钮 */
-function SourceTab({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={
-        'flex-1 rounded-md px-2 py-1 text-xs transition-colors ' +
-        (active ? 'bg-background font-medium shadow-sm' : 'text-muted-foreground hover:text-foreground')
-      }
-    >
-      {children}
-    </button>
-  )
-}
-
+/** 分类筛选条上的小圆角按钮 */
 function Chip({
   active,
   onClick,

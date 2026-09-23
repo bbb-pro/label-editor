@@ -122,7 +122,7 @@ export default function TopBar(props: TopBarProps) {
         variant="ghost"
         size="sm"
         onClick={onOpenLibrary}
-        title="模板库：行业模板（食品 / 电商 / 仓储 / 医药 / 资产 / 服装吊牌）+ 通用模板（跨境电商 GPSR / FBA / GS1 等）"
+        title="模板库：306 个模板 / 22 个分类（食品 / 仓储 / 医药 / 资产 / 服饰 / 物流 / 跨境电商 GPSR / FBA / GS1 等）"
       >
         <LayoutTemplate className="mr-1 h-4 w-4" />
         <span className="hidden lg:inline">模板库</span>
