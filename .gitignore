@@ -8,6 +8,10 @@ dist
 dist-ssr
 *.local
 
+# 离线单文件包：产物几十 MB、属于一次性交付物，不入库（构建脚本已入库，随时可重生成）
+offline
+offline-dist
+
 # Local project memory / config (not source)
 .workbuddy
 
