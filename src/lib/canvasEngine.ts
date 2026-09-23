@@ -9,7 +9,14 @@ import {
   type BarcodeRenderSettings,
 } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
-import { pxToPt, ptToPx } from '@/lib/textStyles'
+import {
+  pxToPt,
+  ptToPx,
+  normalizeFontFamily,
+  canUseBuiltinFont,
+  DEFAULT_FONT,
+  CJK_FONT,
+} from '@/lib/textStyles'
 import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import { resolveContent } from '@/lib/content'
@@ -135,27 +142,19 @@ const GROW_STEP_MM = 100
 const PAPER_GAP_MM = 20
 /** 工作区底色（标签纸之外的部分） */
 const WORKSPACE_BG = '#e2e8f0'
-/** 模板库落盘时文本统一使用的字体：与 addText 保持一致，
- *  纯拉丁内容在 PDF 里会被映射成内置字体（矢量、免内嵌），中文走内嵌子集。 */
-const TEMPLATE_FONT = 'Arial'
-
 /**
- * 含 CJK 的模板文本专用字体。
+ * 按内容挑字体 —— **画布与导出共用同一条判据**，这是「所见即所得」的前提。
+ *
+ * 导出 PDF 时程序内只有两类字体资源（jsPDF 内置 Helvetica/Times/Courier + 内嵌 simhei），
+ * 规则因此很简单：内容能被内置字库安全表示 → Arial（PDF 侧映射成内置 Helvetica，
+ * 矢量、免内嵌）；否则（中文 / 日文 / ℃ / ≤ 等符号）→ 黑体（PDF 侧内嵌 simhei 子集）。
  *
  * 为什么不能统一用 Arial：Arial 没有中文字形，画布上会静默回退到系统默认中文字体
- * （Windows 上是宋体），而 PDF 侧 `pdfFontFor` 对「拉丁字体 + 中文内容」会内嵌
- * simhei 子集 → 预览是宋体、打印是黑体，且属性面板显示 Arial，三者互不相同。
- * 这里按内容选字体：含 CJK 用 SimHei（黑体，与 PDF 内嵌字体同源），
- * 纯拉丁仍用 Arial（PDF 走内置矢量字体），属性面板 → 画布 → 打印完全一致。
+ * （Windows 上是宋体），而 PDF 那边是黑体 → 预览、属性面板、打印三者互不相同。
+ * ⚠️ 判据直接复用导出侧的 `canUseBuiltinFont`，别再写一套 —— 两套判据一定会漂移。
  */
-const TEMPLATE_CJK_FONT = 'SimHei'
-
-/** 是否含 CJK / 日文假名 / 谚文 / 全角标点（这些字形 Arial 都没有） */
-const CJK_RE = /[\u2E80-\u9FFF\u3000-\u303F\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/
-
-/** 按内容挑模板字体（含 CJK → 黑体，否则 Arial） */
-function templateFontFor(text: string): string {
-  return CJK_RE.test(text) ? TEMPLATE_CJK_FONT : TEMPLATE_FONT
+function fontForContent(text: string): string {
+  return canUseBuiltinFont(text) ? DEFAULT_FONT : CJK_FONT
 }
 
 /** 取自定义字段读写器（类型断言，绕开 fabric 泛型 set） */
@@ -169,7 +168,7 @@ function cf(o: fabric.Object): fabric.Object & CustomFields {
  * 所以宁可把框放宽一点。用 fabric.Text 而不是 Textbox：前者构造时就会
  * 算出自然宽度（= 不折行所需的最小宽度），后者按给定宽度折行。
  */
-function measureSingleLinePx(text: string, fontSizePx: number, bold: boolean, fontFamily = TEMPLATE_FONT): number {
+function measureSingleLinePx(text: string, fontSizePx: number, bold: boolean, fontFamily = DEFAULT_FONT): number {
   const probe = new fabric.Text(text, {
     fontSize: fontSizePx,
     fontFamily,
@@ -1110,7 +1109,7 @@ export class CanvasController {
       const itAny = it as fabric.IText
       const fsPx = itAny.fontSize ?? 12
       textFormat = {
-        fontFamily: itAny.fontFamily ?? 'Arial',
+        fontFamily: itAny.fontFamily ?? DEFAULT_FONT,
         fontSizePt: Math.round(pxToPt(fsPx) * 10) / 10,
         bold: itAny.fontWeight === 'bold',
         italic: itAny.fontStyle === 'italic',
@@ -1119,6 +1118,9 @@ export class CanvasController {
         // 优先回显用户输入的 pt 存档值（避免换算噪声），否则由 charSpacing 反推
         letterSpacingPt:
           c._letterSpacingPt ?? Math.round(charSpacingToPt(itAny.charSpacing, fsPx) * 10) / 10,
+        // 「能否交给 PDF 内置字库」与导出侧共用同一判据：中文 / ℃ / ≤ 等符号不行，
+        // 这类文本导出走内嵌黑体、画布上拉丁字体也会回退系统字体 → 面板可据此提示
+        needsEmbeddedFont: !canUseBuiltinFont(text),
       }
       const hasBorder = !!(it as fabric.Object).stroke && (it as fabric.Object).stroke !== 'transparent'
       const hasBg = !!(it as fabric.Object).backgroundColor && (it as fabric.Object).backgroundColor !== 'transparent'
@@ -1198,7 +1200,7 @@ export class CanvasController {
     if (c.kind !== 'text') return
     const it = obj as fabric.IText
     const set: Record<string, unknown> = {}
-    if (patch.fontFamily) set.fontFamily = patch.fontFamily
+    if (patch.fontFamily) set.fontFamily = normalizeFontFamily(patch.fontFamily)
     if (patch.fontSizePt != null) {
       set.fontSize = ptToPx(patch.fontSizePt)
       // 字间距按 pt 存档：字号变了要换算成新的 charSpacing，视觉字距才不被字号带跑
@@ -1885,7 +1887,9 @@ export class CanvasController {
       top: cy - mmToPx(9),
       width: boxW,
       fontSize: 20,
-      fontFamily: 'Arial',
+      // 字体按内容选：占位文本是中文 → 黑体；否则建成 Arial 后画布回退系统字体、
+      // 导出却是黑体，一插入就不一致
+      fontFamily: fontForContent(initial),
       fill: '#000000',
       originX: 'left',
       originY: 'top',
@@ -1923,7 +1927,9 @@ export class CanvasController {
       top: cy - mmToPx(3),
       width: boxW,
       fontSize: 22,
-      fontFamily: 'Arial',
+      // 字体按内容选：默认占位「文本」是中文 → 黑体（Arial 没有中文字形，
+      // 画布会回退系统字体，导出却是黑体 → 一建出来就不一致）
+      fontFamily: fontForContent(initial),
       fill: '#000000',
       originX: 'left',
       originY: 'top',
@@ -3307,6 +3313,14 @@ export class CanvasController {
     if (c.kind === 'text') {
       c._textParagraph = !!s._textParagraph
       if (typeof s._letterSpacingPt === 'number') c._letterSpacingPt = s._letterSpacingPt
+      // 字体归一：老模板 / 老标签里可能存着已下架的字体名（宋体 / 微软雅黑 / Verdana…）。
+      // 不归一的话，画布按旧字体渲染（本机装了就显示、没装就回退系统字体），
+      // 而导出 PDF 时它必然被换成别的字体 →「打开看到的」与「导出的」不一致。
+      // 归一后两边都是清单内的字体，才谈得上所见即所得。
+      // 注：fabric 的 fontFamily 属 _dimensionAffectingProps，set 会自动重算尺寸。
+      const tf = o as fabric.IText
+      const normalized = normalizeFontFamily(tf.fontFamily)
+      if (normalized !== tf.fontFamily) tf.set('fontFamily', normalized)
     }
     if (isContentKind(c.kind)) {
       if (typeof s._prefix === 'string') c._prefix = s._prefix
@@ -3479,8 +3493,8 @@ export class CanvasController {
         let fsPx = ptToPx(n.fontSizePt)
         let boxFinal = boxW
         let topAdj = 0
-        // 字体按内容选：中文用黑体（与 PDF 内嵌 simhei 同源），纯拉丁用 Arial
-        const font = templateFontFor(n.text)
+        // 字体按内容选：中文/符号用黑体（与 PDF 内嵌 simhei 同源），纯拉丁用 Arial
+        const font = fontForContent(n.text)
         const natural = measureSingleLinePx(n.text, fsPx, n.bold, font)
         const wanted = natural * 1.02 + 2
         if (wanted > boxW) {

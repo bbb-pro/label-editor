@@ -28,6 +28,12 @@ export interface TextFormatSnapshot {
   textAlign: string
   /** 字间距(pt)，0=默认 */
   letterSpacingPt: number
+  /**
+   * 内容是否含 PDF 内置字库没有的字符（中文、℃、≤ 等）。
+   * 为 true 时导出会走内嵌黑体子集，且画布上拉丁字体也会回退系统字体 →
+   * 属性面板据此提示用户改用黑体，避免「画布看到的」与「导出的」不一致。
+   */
+  needsEmbeddedFont: boolean
 }
 
 /**

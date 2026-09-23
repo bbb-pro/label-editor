@@ -13,7 +13,7 @@ import { Font } from 'fonteditor-core'
 import type { PaperOrder, PaperSize, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
-import { pxToPt } from '@/lib/textStyles'
+import { pxToPt, canUseBuiltinFont } from '@/lib/textStyles'
 import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import type { fabric } from 'fabric'
@@ -30,8 +30,14 @@ const FONT_URL = () => `${import.meta.env.BASE_URL}fonts/simhei.ttf`
  * 策略分两类：
  * 1) 拉丁字体 → jsPDF 内置标准字体（Helvetica / Times / Courier），
  *    它们是 PDF 基础 14 字体，**无需内嵌**、跨平台字面稳定，且是矢量。
+ *    字面保真度：Helvetica / Times / Courier 与同名 Windows 字体的**度量基本一致**
+ *    （Courier 完全一致，Times 约 -2%，Helvetica 约 -3% —— 残差来自 jsPDF 内置宽度表
+ *    是近似值，与字体本身无关）。
  * 2) 中文字体 / 未知字体 → 内嵌 simhei 子集（唯一可用的中文字体资源）。
- *    纯中文内容用哪种中文字体差异有限，整段走子集可保证不出方框。
+ *
+ * ⚠️ 可选的画布字体清单已收敛为「能保真的那几款」（见 `lib/textStyles.ts` 的 FONT_FAMILIES），
+ *    这里保留已下架字体的映射仅作兼容兜底：万一有旧数据绕过归一化直接进来，
+ *    仍然映射到最接近的字体，而不是掉进"未知字体全用黑体"的坑。
  */
 const PDF_FONT_LATIN = {
   helvetica: 'helvetica',
@@ -39,35 +45,43 @@ const PDF_FONT_LATIN = {
   courier: 'courier',
 } as const
 
-/** 画布字体名（小写匹配）→ jsPDF 内置字体名；不在表内的走内嵌子集 */
+/** 画布字体名（小写匹配）→ jsPDF 内置字体名；不在表内的按无衬线兜底 */
 const CANVAS_TO_PDF_FONT: Record<string, string> = {
   arial: PDF_FONT_LATIN.helvetica,
   helvetica: PDF_FONT_LATIN.helvetica,
+  'times new roman': PDF_FONT_LATIN.times,
+  times: PDF_FONT_LATIN.times,
+  'courier new': PDF_FONT_LATIN.courier,
+  courier: PDF_FONT_LATIN.courier,
+  // 黑体：PDF 侧内嵌同一份 simhei 子集 → 画布是 simhei、PDF 也是 simhei，字形完全一致。
+  // ⚠️ 即使内容是纯拉丁也必须走子集：否则画布（SimHei 的拉丁字形）与
+  //    PDF（内置 Helvetica）两边不一样，又变成"字体变了"。
+  simhei: FONT_ALIAS,
+  // ↓ 已从面板下架（导出时字形/字宽变化明显），保留映射以兼容旧数据
   verdana: PDF_FONT_LATIN.helvetica,
   tahoma: PDF_FONT_LATIN.helvetica,
   'trebuchet ms': PDF_FONT_LATIN.helvetica,
   'ms sans serif': PDF_FONT_LATIN.helvetica,
   'microsoft sans serif': PDF_FONT_LATIN.helvetica,
   georgia: PDF_FONT_LATIN.times,
-  'times new roman': PDF_FONT_LATIN.times,
-  times: PDF_FONT_LATIN.times,
-  'courier new': PDF_FONT_LATIN.courier,
-  courier: PDF_FONT_LATIN.courier,
   impact: PDF_FONT_LATIN.helvetica,
 }
 
-/** 判断某段文本是否只需拉丁字形（决定能否用内置字体，避免中文变方框） */
-function isLatinOnly(text: string): boolean {
-  // 含中文（CJK 统一表意文字、扩展 A、兼容表意、全角标点等）则不能用内置字体
-  return !/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF\u3000-\u303F]/.test(text)
-}
-
-/** 取某对象应使用的 PDF 字体名：拉丁字体且内容纯拉丁 → 内置字体，否则 → 内嵌子集 */
+/**
+ * 取某对象应使用的 PDF 字体名。
+ * 判据：内容能安全交给内置字体 **且** 画布用的是拉丁字体 → 内置字体，否则 → 内嵌子集。
+ * ⚠️ 兜底方向很关键：**含中文/特殊符号一律内嵌子集**（唯一不会出方框的解），
+ *    而"未知字体 + 纯拉丁"按无衬线兜底 —— 拿黑体去画拉丁文字，字宽与字形都差得远。
+ * 判据函数 canUseBuiltinFont 与属性面板提示共用（见 lib/textStyles.ts）。
+ */
 function pdfFontFor(obj: fabric.Object, content: string): string {
   const fam = String((obj as { fontFamily?: string }).fontFamily ?? '').toLowerCase().trim()
-  const builtin = CANVAS_TO_PDF_FONT[fam]
-  if (builtin && isLatinOnly(content)) return builtin
-  return FONT_ALIAS
+  if (!canUseBuiltinFont(content)) return FONT_ALIAS
+  // 字体族列表（"Arial, SimHei"）取第一个能识别的
+  const key = fam.includes(',')
+    ? (fam.split(',').map((s) => s.trim()).find((s) => CANVAS_TO_PDF_FONT[s]) ?? fam)
+    : fam
+  return CANVAS_TO_PDF_FONT[key] ?? PDF_FONT_LATIN.helvetica
 }
 
 /** 条码组里的「人读文字」child（只有一维码有） */
