@@ -188,7 +188,8 @@ npm run preview
   2. `npm run build` 构建到 `dist/`
   3. 通过 `peaceiris/actions-gh-pages` 将 `dist/` 发布到 **`gh-pages`** 分支
 - GitHub Pages 的发布源已设为 **`gh-pages` 分支（/ 根目录）**。
-- 自定义域名 **`057300.xyz`** 由 `public/CNAME` 与 Actions 中的 `cname` 共同保证。
+- **本项目不单独声明自定义域**。博客用户站 `bbb-pro.github.io` 已绑定 `057300.xyz`，GitHub 会把该自定义域自动应用到其下所有项目站，因此本站通过 **`https://057300.xyz/label-editor/`** 访问。
+  > ⚠️ 不要在项目仓库里声明 apex 域 `057300.xyz`（无论是 `public/CNAME` 还是 Actions 中的 `cname:`）。那会与用户站争夺同一域名，在 GitHub Pages 侧显示为 *CNAME already taken*，并可能导致自定义域被清除、部署中断。
 
 > 开发时只需专注 `main` 分支源码；上线无需手动构建，提交即生效（通常 1 分钟内）。
 
