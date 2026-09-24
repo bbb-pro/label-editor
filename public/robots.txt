@@ -1,5 +1,7 @@
 User-agent: *
 Allow: /
 
+# 本文件位于 /label-editor/ 子目录。注意：搜索引擎只读取域名根目录的
+# https://057300.xyz/robots.txt，本文件仅作声明用途。
 # 编辑器为纯前端应用，所有页面均可索引
-Sitemap: https://057300.xyz/sitemap.xml
+Sitemap: https://057300.xyz/label-editor/sitemap.xml
