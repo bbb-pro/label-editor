@@ -219,6 +219,16 @@
         ]
       }
     </script>
+    <!-- 百度统计：全站流量统计（SPA 主文档，全站唯一入口，路由切换不重新加载页面也不影响 PV 统计） -->
+    <script>
+      var _hmt = _hmt || [];
+      (function () {
+        var hm = document.createElement("script");
+        hm.src = "https://hm.baidu.com/hm.js?87c8e0d5bc10316e4785ef9f6300beeb";
+        var s = document.getElementsByTagName("script")[0];
+        s.parentNode.insertBefore(hm, s);
+      })();
+    </script>
   </head>
   <body>
     <div id="root">
