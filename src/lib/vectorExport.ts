@@ -69,6 +69,22 @@ const CANVAS_TO_PDF_FONT: Record<string, string> = {
 }
 
 /**
+ * fabric 的「行高换算系数」（`fabric.Text._fontSizeMult`，fabric 5 里固定 1.13）。
+ *
+ * ⚠️ 画布上「基线到基线」的距离**不是** `fontSize × lineHeight`：
+ *    `getHeightOfLine(i) = fontSize × lineHeight × 1.13`
+ *    首行基线距文字盒顶 = `getHeightOfLine / lineHeight = fontSize × 1.13`
+ *    （见 fabric `_getHeightOfLine` / `_renderTextCommon`：`top + lineHeights + maxHeight`）
+ *
+ * 早期 PDF 只按 `fontSize × lineHeight` 排行 → 行距比画布小 13%：
+ * 20px/1.35 的文本画布行距 30.51px、PDF 只有 27px，每行差 3.5px，
+ * 5 行文本累计偏 14px（≈3.7mm）→ 越往下越往"上"跑，最终压在表格线/下划线上。
+ * 首行基线也用了 0.86em（≈17.2px）而非 1.13em（22.6px）→ 整体再高 1.4mm。
+ * 这两处必须与 fabric 同口径，导出才真正"所见即所得"。
+ */
+const FABRIC_LINE_MULT = 1.13
+
+/**
  * 取某对象应使用的 PDF 字体名。
  * 判据：内容能安全交给内置字体 **且** 画布用的是拉丁字体 → 内置字体，否则 → 内嵌子集。
  * ⚠️ 兜底方向很关键：**含中文/特殊符号一律内嵌子集**（唯一不会出方框的解），
@@ -351,9 +367,11 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
 
   // 文本区域若有背景/描边盒，先画（若用户设置了 textBackgroundColor 由 fabric 用 styles 渲染，此简版忽略，
   // 仅处理全局 stroke 边框——多数文本无框）
-  const lineH = fontSizePt / 72 * 25.4 // 单行 em 高度(mm)
-  const lineLead = lineH * lineHeightF
-  const ascent = lineH * 0.86
+  // 行距与首行基线：必须与 fabric 的排版同口径（含 1.13 的行高系数），
+  // 否则行距会比画布小 13%，多行文本逐行上漂、压到线条上。详见 FABRIC_LINE_MULT。
+  const emMm = pxToMm(fontSizePx) // 1em 的字身高度(mm)
+  const lineLead = emMm * lineHeightF * FABRIC_LINE_MULT // 基线到基线
+  const ascent = emMm * FABRIC_LINE_MULT // 首行基线距文字盒顶
 
   // 断行：优先复用 fabric 的换行结果（与画布逐行一致），并取它算好的行宽
   const fabricLines = fabricWrappedLines(it, content)
@@ -834,7 +852,8 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
   // ③ 单元格文字（按列宽折行、垂直居中；与画布 Textbox 的排版规则一致）
   const sample = hrtTextChild(o)
   const fontSizePt = Math.max(1, spec.fontSizePt ?? 9)
-  const lineHMm = (fontSizePt / 72) * 25.4 * 1.15
+  // 单元格多行时同样要按 fabric 的 1.13 行高系数排（table.ts 里单元格 lineHeight 固定 1.15）
+  const lineHMm = (fontSizePt / 72) * 25.4 * 1.15 * FABRIC_LINE_MULT
   const maxTextW = Math.max(0.5, colW - padMm * 2)
   for (let r = 0; r < nR; r++) {
     for (let c = 0; c < nC; c++) {
