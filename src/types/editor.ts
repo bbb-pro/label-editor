@@ -1,6 +1,7 @@
 // 属性面板使用的共享类型
 import type { DataRow, ElementKind, ShapeType } from '@/types/template'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
+import type { TableSpec } from '@/lib/table'
 
 /** 文本元素格式（顶层属性，可整段应用） */
 export interface TextStyle {
@@ -98,6 +99,8 @@ export interface ActiveObject {
   textRegion?: { border: boolean; bg: boolean }
   /** 仅文本对象：段落文本（定宽自动换行的多行区域框） */
   isParagraph?: boolean
+  /** 仅表格对象：表格数据与样式（行列内容、边框、字号…） */
+  table?: TableSpec
 }
 
 export type { DataRow, ElementKind }

@@ -41,10 +41,14 @@ import {
   Unlock,
   Hash,
   Copy,
+  Table as TableIcon,
+  Minus as MinusGlyph,
+  Plus as PlusGlyph,
 } from 'lucide-react'
 import type { PaperSize, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec, BarcodeAlign } from '@/types/editor'
+import type { TableSpec } from '@/lib/table'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { FONT_FAMILIES, CJK_FONT } from '@/lib/textStyles'
 import MmField from '@/components/editor/MmField'
@@ -91,6 +95,14 @@ interface PropertyPanelProps {
   onFillColorChange: (color: string | null) => void
   /** 文本：区域框开关（边框+底色） */
   onTextRegionChange: (r: { border: boolean; bg: boolean }) => void
+  /** 表格：改内容/样式（行数、列数、字号、边框…） */
+  onTableSpecChange: (patch: Partial<TableSpec>) => void
+  /** 表格：末尾增删行（+1 / -1） */
+  onTableRowDelta: (delta: number) => void
+  /** 表格：末尾增删列（+1 / -1） */
+  onTableColDelta: (delta: number) => void
+  /** 表格：打开「编辑单元格」对话框 */
+  onOpenTableEditor: () => void
   objectCount: number
   /** 仅内容模式：供移动端底部抽屉复用（自行包裹滚动） */
   bare?: boolean
@@ -104,6 +116,7 @@ const kindMeta: Record<ElementKind, { label: string; Icon: typeof Layers; color:
   image: { label: '图片', Icon: ImageIcon, color: 'text-amber-600 bg-amber-50' },
   shape: { label: '形状', Icon: ShapesIcon, color: 'text-slate-600 bg-slate-100' },
   svg: { label: '矢量素材', Icon: SparklesIcon, color: 'text-teal-600 bg-teal-50' },
+  table: { label: '表格', Icon: TableIcon, color: 'text-emerald-600 bg-emerald-50' },
 }
 
 /** 形状子类型的图标与中文名 */
@@ -234,6 +247,10 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onStrokeColorChange={props.onStrokeColorChange}
           onFillColorChange={props.onFillColorChange}
           onTextRegionChange={props.onTextRegionChange}
+          onTableSpecChange={props.onTableSpecChange}
+          onTableRowDelta={props.onTableRowDelta}
+          onTableColDelta={props.onTableColDelta}
+          onOpenTableEditor={props.onOpenTableEditor}
         />
       ) : (
         <EmptySelection objectCount={props.objectCount} />
@@ -451,6 +468,10 @@ function SelectedObjectPanel({
   onStrokeColorChange,
   onFillColorChange,
   onTextRegionChange,
+  onTableSpecChange,
+  onTableRowDelta,
+  onTableColDelta,
+  onOpenTableEditor,
 }: Omit<
   PropertyPanelProps,
   'active' | 'paper' | 'onPaperChange' | 'paperColor' | 'onPaperColorChange' | 'objectCount' | 'currentRow'
@@ -463,6 +484,10 @@ function SelectedObjectPanel({
   const isStroke = active.kind === 'rect' || active.kind === 'shape' || active.kind === 'line'
   // 矢量素材：线稿类（图标）可改描边色；彩绘类（emoji）保持原色，故不显示改色控件
   const isSvgAsset = active.kind === 'svg'
+  const isTable = active.kind === 'table'
+  const table = active.table
+  const tableRows = table?.rows.length ?? 0
+  const tableCols = table?.rows[0]?.length ?? 0
   const canEditContent = isText || isBarcode
   // 选中对象头部显示用：kind==='shape' 时展示具体形状（椭圆/三角…）
   const HeaderShapeIcon = active.kind === 'shape' ? (SHAPE_META[active.shapeType ?? 'ellipse'].Icon) : meta.Icon
@@ -543,9 +568,81 @@ function SelectedObjectPanel({
           value={active.angle}
           suffix="°"
           step={1}
+          disabled={isTable}
           onChange={(v) => onGeometry({ angle: v })}
         />
       </Section>
+
+      {isTable && table && (
+        <Section title="表格">
+          {/* 行列增删：直接按 +/- 改规模（末尾增删，与表格软件的习惯一致） */}
+          <div className="grid grid-cols-2 gap-2">
+            <TableCountField label="行" value={tableRows} onChangeDelta={onTableRowDelta} />
+            <TableCountField label="列" value={tableCols} onChangeDelta={onTableColDelta} />
+          </div>
+          <MmField
+            label="字号"
+            value={table.fontSizePt ?? 9}
+            suffix="pt"
+            step={0.5}
+            onChange={(v) => onTableSpecChange({ fontSizePt: Math.max(4, Math.min(72, v)) })}
+          />
+          {/* 单元格对齐 + 整体加粗 */}
+          <div className="flex items-center gap-1">
+            {(
+              [
+                ['left', AlignLeft, '单元格文字居左'],
+                ['center', AlignCenter, '单元格文字居中'],
+                ['right', AlignRight, '单元格文字居右'],
+              ] as const
+            ).map(([k, Icon, title]) => (
+              <Toggle
+                key={k}
+                size="sm"
+                pressed={(table.align ?? 'left') === k}
+                onPressedChange={() => onTableSpecChange({ align: k })}
+                aria-label={title}
+                title={title}
+              >
+                <Icon className="h-4 w-4" />
+              </Toggle>
+            ))}
+            <div className="mx-1 h-5 w-px bg-border" />
+            <Toggle
+              size="sm"
+              pressed={!!table.bold}
+              onPressedChange={(p) => onTableSpecChange({ bold: p })}
+              aria-label="整体加粗"
+              title="全部加粗（表头行始终加粗）"
+            >
+              <Bold className="h-4 w-4" />
+            </Toggle>
+          </div>
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span>首行作为表头（加粗 + 浅底色）</span>
+            <Switch
+              checked={table.headerRow !== false}
+              onCheckedChange={(v) => onTableSpecChange({ headerRow: v })}
+            />
+          </div>
+          <MmField
+            label="边框粗细"
+            value={table.borderWidth ?? 1}
+            suffix="px"
+            step={0.5}
+            onChange={(v) => onTableSpecChange({ borderWidth: Math.max(0.2, Math.min(12, v)) })}
+          />
+          <ColorField
+            label="边框颜色"
+            color={table.borderColor ?? '#000000'}
+            onPick={(c) => onTableSpecChange({ borderColor: c ?? '#000000' })}
+          />
+          <Button variant="outline" size="sm" className="w-full" onClick={onOpenTableEditor}>
+            <TableIcon className="mr-1.5 h-3.5 w-3.5" />
+            编辑单元格内容
+          </Button>
+        </Section>
+      )}
 
       {isSvgAsset && (
         <Section title="外观">
@@ -1306,6 +1403,38 @@ function previewSeq(start: number, step: number, minDigits: number): string {
   const n = 4
   const list = Array.from({ length: n }, (_, i) => pad(start + i * step)).join(', ')
   return `${list}, …`
+}
+
+/** 表格行列数：两个按钮直接增删。行列数只能是正整数，点按比输入框更省事 */
+function TableCountField({
+  label,
+  value,
+  onChangeDelta,
+}: {
+  label: string
+  value: number
+  onChangeDelta: (d: number) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="outline"
+          size="icon-sm"
+          onClick={() => onChangeDelta(-1)}
+          disabled={value <= 1}
+          title={`删一${label}`}
+        >
+          <MinusGlyph className="h-3.5 w-3.5" />
+        </Button>
+        <span className="flex-1 text-center text-xs tabular-nums">{value}</span>
+        <Button variant="outline" size="icon-sm" onClick={() => onChangeDelta(1)} title={`加一${label}`}>
+          <PlusGlyph className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

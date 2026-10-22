@@ -23,6 +23,14 @@ import { resolveContent } from '@/lib/content'
 import type { ActiveObject, TextFormatSnapshot, TextStyle, BarcodeAlign } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
 import type { TemplateSpec, TplBarcodeNode } from '@/lib/templateLibrary'
+import {
+  buildTableGroup,
+  defaultTableSpec,
+  normalizeRows,
+  resizeTableCols,
+  resizeTableRows,
+  type TableSpec,
+} from '@/lib/table'
 
 export type ActiveObjectSnapshot = ActiveObject
 
@@ -110,6 +118,8 @@ interface CustomFields {
   _svgColor?: string
   /** SVG 素材：线稿粗细（仅线稿时有意义） */
   _svgStrokeWidth?: number
+  /** 表格：行列内容与样式（kind === 'table' 时生效；组内格线/文字由它重建） */
+  _table?: TableSpec
 }
 
 const isBarcodeKind = (k: ElementKind | undefined): boolean => k === 'barcode'
@@ -120,7 +130,8 @@ const isStrokeKind = (k: ElementKind | undefined): boolean => k === 'rect' || k 
 /** 「原子编组」：虽是 fabric.Group 但必须整体作为叶子处理，不可穿透成子图形。
  *  - barcode：穿透后 refreshAllContent 遍历不到条码本身，数据源/序列化递增时不跟随；
  *  - svg：素材由多个 path 组成，矢量导出按整段 SVG 重绘，拆开会丢失结构。 */
-const isAtomicGroupKind = (k: ElementKind | undefined): boolean => k === 'barcode' || k === 'svg'
+const isAtomicGroupKind = (k: ElementKind | undefined): boolean =>
+  k === 'barcode' || k === 'svg' || k === 'table'
 
 /** 条码渲染指纹：这四项不变时，重建出的条码组一定与现有一致（可安全跳过重建） */
 const barcodeSignature = (
@@ -252,6 +263,8 @@ function kindLabel(k: ElementKind): string {
       return '图片'
     case 'svg':
       return '素材'
+    case 'table':
+      return '表格'
   }
 }
 
@@ -467,8 +480,10 @@ export class CanvasController {
       this.emitActiveThrottled()
       const t = (e as { target?: fabric.Object }).target ?? null
       this.updateOutsidePaperVisual(t)
-      // 拖到边缘时画布自动向外扩张（无限画布）
-      if (t) this.autoGrowForObject(t)
+      // 拖到边缘时画布自动向外扩张（无限画布）。扩张会平移纸张 → 候选线整体位移，必须重算。
+      if (t) {
+        if (this.autoGrowForObject(t)) this._snapCands = null
+      }
       this.applySnap(t)
     })
     this.canvas.on('object:scaling', (e) => {
@@ -481,7 +496,10 @@ export class CanvasController {
       // 文字才不会跟着组一起变大变小。
       else if (t) this.eachBarcode(t, (b) => this.applyBarcodeTextCompensation(b))
       this.updateOutsidePaperVisual(t)
-      this.applySnap(t)
+      // ⚠️ 缩放**不做**位置吸附：fabric 的缩放是「以对角控制点为锚点改 scale」，
+      //   在这里整体平移对象会让整个对象随控制点横跳（拖右边把手，左边也跟着跳），
+      //   这正是「吸附太灵活」的主要来源。缩放该吸的是「被拖的那条边」，
+      //   属于改 scale 的范畴；这里留给移动吸附，缩放结束后统一折算（见 object:modified）。
     })
     this.canvas.on('object:rotating', () => this.emitActiveThrottled())
     // ⚠️ 交互前的快照：拖动/缩放/旋转必须记录「操作之前」的状态，否则撤销等于回到原位。
@@ -491,12 +509,22 @@ export class CanvasController {
       const t = (opt as { target?: fabric.Object }).target
       if (!t || cf(t).excludeFromExport) {
         this._pendingHistory = null
+        this._snapCands = null
         return
       }
       this._pendingHistory = this.snapshot()
+      // 点击画布 = 新的一次编辑会话：下一次字段编辑重新压一条撤销历史。
+      // 否则「连续改完某个字段后再点别的对象继续改」会被并进同一条历史，撤销跳过一整段。
+      this._typingSeen = false
+      // 拖动开始前把候选吸附线算好，moving 期间直接复用（其它对象在拖动中不会移动）
+      this._snapCands = this._snapEnabled && t.type !== 'activeSelection' ? this.collectCandidates(t) : null
     })
     this.canvas.on('object:modified', () => {
       this.clearGuides()
+      this._snapCands = null
+      // 表格：把拖拽缩放产生的 scale 折算回「基几何」并重建 ——
+      // 否则 3×3 表被拉成 2:1 时文字会跟着一起变形（Word 里拉表格边框是字不动的）。
+      this.normalizeTableScaleAll()
       // 拖出/拖回后立即刷一次透明度视觉（编组/多选内也按最外层对象评估）
       this.refreshOutsidePaperAll()
       // 变换收尾：把画布上所有条码的人读文字再刷一遍。
@@ -594,12 +622,25 @@ export class CanvasController {
     })
   }
 
-  // ── 吸附（拖动/缩放时对齐纸张边/中线 + 其它对象边/中线） ───
+  // ── 吸附（拖动时对齐纸张边/中线 + 其它对象边/中线） ───
   private _snapEnabled = true
-  /** 吸附阈值（纸面像素，约 1.5mm） */
-  private _snapTol = 6
-  /** 当前显示中的吸附参考线（fabric.Line），用于随移动/缩放刷新 */
+  /**
+   * 吸附阈值，单位是**屏幕像素**（不是画布坐标）。
+   *
+   * ⚠️ 必须除以视图缩放再换算成画布坐标：`getBoundingRect()` 返回的是画布坐标系的值，
+   * 而用户的「差一点点」判断发生在屏幕上。固定用画布坐标会让有效吸附范围随缩放漂移 ——
+   * 放大到 300% 时只剩 3 屏幕 px（伸过去也吸不上，感觉「不灵」），
+   * 缩到 40% 时变成 20 屏幕 px（轻轻一碰就被吸走，感觉「太灵活」）。
+   */
+  private _snapTolScreenPx = 9
+  /** 当前显示中的吸附参考线（fabric.Line），移动/松开时清理 */
   private _guides: fabric.Line[] = []
+  /**
+   * mouse:down 时算好的候选吸附线，moving 期间复用。
+   * 每帧重算 = 对每个顶层对象调一次 getBoundingRect(true)，对象一多就掉帧，
+   * 而拖动过程中其它对象并不会动 —— 一次算完即可。
+   */
+  private _snapCands: { x: number[]; y: number[] } | null = null
 
   getSnapEnabled(): boolean {
     return this._snapEnabled
@@ -615,7 +656,24 @@ export class CanvasController {
     this._guides = []
   }
 
-  /** 在 (x,y 坐标，画一条贯穿整张纸的参考线；横向或纵向由 x1=x2 或 y1=y2 决定 */
+  /**
+   * 参考线要插在「纸卡之上、内容之下」的位置。
+   *
+   * ⚠️ 之前用 `sendToBack()`：纸卡（excludeFromExport 的白底矩形）本身就在最底层，
+   * 线被送到底后正好落在**不透明的纸面下面** —— 视觉上完全没有参考线。
+   * 吸附「没有反馈」的观感就来自这里：明明吸上了，用户看不出任何提示。
+   */
+  private guideInsertIndex(): number {
+    const objs = this.canvas.getObjects()
+    let lastPaper = -1
+    for (const [, rect] of this.paperRects) {
+      const i = objs.indexOf(rect)
+      if (i > lastPaper) lastPaper = i
+    }
+    return Math.max(0, lastPaper + 1)
+  }
+
+  /** 画一条贯穿当前纸张的参考线（竖直：x1=x2；水平：y1=y2） */
   private addGuide(x1: number, y1: number, x2: number, y2: number) {
     const line = new fabric.Line([x1, y1, x2, y2], {
       stroke: '#ec4899',
@@ -623,16 +681,16 @@ export class CanvasController {
       selectable: false,
       evented: false,
       excludeFromExport: true,
-      opacity: 0.85,
+      opacity: 0.9,
+      strokeUniform: true,
     })
     this.canvas.add(line)
-    // 置于底层
-    this.canvas.sendToBack(line)
+    this.canvas.moveTo(line, this.guideInsertIndex())
     this._guides.push(line)
   }
 
   /** 取候选吸附线（X/Y 轴各一组）。`self` 为当前移动对象（需排除自身）。 */
-  private collectCandidates(self: fabric.Object | fabric.ActiveSelection) {
+  private collectCandidates(self: fabric.Object) {
     const left = this.paperOffsetX
     const top = this.paperOffsetY
     const right = left + this.paperPxW
@@ -645,12 +703,8 @@ export class CanvasController {
     const objY: number[] = []
     for (const o of this.flattenTopLevel()) {
       if (o === self) continue
-      // 排除 self 内部的子对象（active selection / group 嵌套）
-      if ((self as fabric.Object).type === 'activeSelection' || (self as fabric.Object).type === 'group') {
-        // 简化：若 activeSelection 包含 o，则跳过
-        const selObjs = (self as { getObjects?: () => fabric.Object[] }).getObjects?.()
-        if (selObjs && selObjs.includes(o)) continue
-      }
+      // 参考线 / 纸卡这类非内容对象不参与对齐
+      if ((o as { excludeFromExport?: boolean }).excludeFromExport) continue
       const r = o.getBoundingRect(true)
       objX.push(r.left, r.left + r.width, r.left + r.width / 2)
       objY.push(r.top, r.top + r.height, r.top + r.height / 2)
@@ -658,61 +712,64 @@ export class CanvasController {
     return { x: [...paperX, ...objX], y: [...paperY, ...objY] }
   }
 
-  /** 在 moving/scaling 期间调：根据当前对象几何找最近候选线，吸附并刷新参考线 */
-  private applySnap(target: fabric.Object | fabric.ActiveSelection | null) {
+  /** 在一组候选线里找最近命中；返回位移量与命中的那条线 */
+  private nearestHit(
+    values: number[],
+    cands: number[],
+    tol: number,
+  ): { d: number; line: number } | null {
+    let best: { d: number; line: number } | null = null
+    for (const v of values) {
+      for (const c of cands) {
+        const d = c - v
+        const ad = Math.abs(d)
+        if (ad <= tol && (!best || ad < Math.abs(best.d))) best = { d, line: c }
+      }
+    }
+    return best
+  }
+
+  /**
+   * 拖动（object:moving）期间调：按当前对象几何找最近候选线，吸附并刷新参考线。
+   *
+   * 三条手感规则：
+   *  ① 阈值按屏幕像素换算（见 `_snapTolScreenPx`）；
+   *  ② **边优先于中心** —— 边对边是用户真正想要的，中心线更容易误触发；
+   *  ③ 只处理单对象。多选（ActiveSelection）有自己缓存的 left/top，
+   *     直接改子对象会与 fabric 内部的变换互相覆盖（表现是一拖就跳），故不吸附。
+   */
+  private applySnap(target: fabric.Object | null) {
     if (!this._snapEnabled || !target) return
-    const rect = (target as fabric.Object).getBoundingRect(true)
-    const cands = this.collectCandidates(target)
-    const tol = this._snapTol
-    const xVals = [rect.left, rect.left + rect.width / 2, rect.left + rect.width]
-    const yVals = [rect.top, rect.top + rect.height / 2, rect.top + rect.height]
-    // 找最近的 X 候选线（纸 + 其它对象）
-    let bestDx = 0
-    let bestDxAbs = Infinity
-    let bestXLine: number | null = null
-    for (const xv of xVals) {
-      for (const cx of cands.x) {
-        const d = cx - xv
-        const ad = Math.abs(d)
-        if (ad <= tol && ad < bestDxAbs) {
-          bestDxAbs = ad
-          bestDx = d
-          bestXLine = cx
-        }
-      }
+    if (target.type === 'activeSelection') return
+    const zoom = Math.max(0.05, this.vptZoom)
+    const tol = this._snapTolScreenPx / zoom
+    const rect = target.getBoundingRect(true)
+    if (!this._snapCands) this._snapCands = this.collectCandidates(target)
+    const cands = this._snapCands
+
+    // 边优先：四条边先找，全都够不着才退而求其次吸中心线
+    const xHit =
+      this.nearestHit([rect.left, rect.left + rect.width], cands.x, tol) ??
+      this.nearestHit([rect.left + rect.width / 2], cands.x, tol)
+    const yHit =
+      this.nearestHit([rect.top, rect.top + rect.height], cands.y, tol) ??
+      this.nearestHit([rect.top + rect.height / 2], cands.y, tol)
+
+    const dx = xHit?.d ?? 0
+    const dy = yHit?.d ?? 0
+    if (dx !== 0 || dy !== 0) {
+      target.set({ left: (target.left ?? 0) + dx, top: (target.top ?? 0) + dy })
+      target.setCoords()
     }
-    let bestDy = 0
-    let bestDyAbs = Infinity
-    let bestYLine: number | null = null
-    for (const yv of yVals) {
-      for (const cy of cands.y) {
-        const d = cy - yv
-        const ad = Math.abs(d)
-        if (ad <= tol && ad < bestDyAbs) {
-          bestDyAbs = ad
-          bestDy = d
-          bestYLine = cy
-        }
-      }
-    }
-    if (bestDx !== 0 || bestDy !== 0) {
-      // 对 activeSelection 整体平移：对每个子对象偏移
-      const sel = target as { type?: string; getObjects?: () => fabric.Object[] }
-      if (sel.type === 'activeSelection' && sel.getObjects) {
-        for (const o of sel.getObjects()) {
-          o.set({ left: (o.left ?? 0) + bestDx, top: (o.top ?? 0) + bestDy })
-          o.setCoords()
-        }
-      } else {
-        const o = target as fabric.Object
-        o.set({ left: (o.left ?? 0) + bestDx, top: (o.top ?? 0) + bestDy })
-        o.setCoords()
-      }
-    }
-    // 画参考线（清旧 → 画新）
+
+    // 参考线：只画真正吸住的那条，且只在纸张范围内
     this.clearGuides()
-    if (bestXLine !== null) this.addGuide(bestXLine, 0, bestXLine, this.paperPxH)
-    if (bestYLine !== null) this.addGuide(0, bestYLine, this.paperPxW, bestYLine)
+    const y0 = this.paperOffsetY
+    const y1 = this.paperOffsetY + this.paperPxH
+    const x0 = this.paperOffsetX
+    const x1 = this.paperOffsetX + this.paperPxW
+    if (xHit) this.addGuide(xHit.line, y0, xHit.line, y1)
+    if (yHit) this.addGuide(x0, yHit.line, x1, yHit.line)
   }
 
   /**
@@ -1110,6 +1167,7 @@ export class CanvasController {
     let prefix = c._prefix ?? ''
     let suffix = c._suffix ?? ''
     let serial: SerialSpec | undefined = c._serial
+    let table: TableSpec | undefined
     if (kind === 'text') {
       const it = obj as fabric.IText
       text = c.originalText ?? it.text ?? ''
@@ -1155,6 +1213,12 @@ export class CanvasController {
       prefix = ''
       suffix = ''
       serial = undefined
+    } else if (kind === 'table') {
+      // 表格：行列内容与样式全部来自 _table（组内子对象只是渲染产物）
+      table = c._table
+      prefix = ''
+      suffix = ''
+      serial = undefined
     } else if (kind === 'svg') {
       // 素材：线稿类可改色（_svgColor），彩绘类（emoji）不支持
       if (c._svgIsStroke) {
@@ -1196,6 +1260,7 @@ export class CanvasController {
       textFormat,
       textRegion,
       isParagraph: kind === 'text' ? !!c._textParagraph : undefined,
+      table,
     })
   }
 
@@ -1764,6 +1829,22 @@ export class CanvasController {
     const obj = this.getActiveObject()
     if (!obj) return
     const c = cf(obj)
+    // 表格：改宽/高 = **重新布局**（单元格重新均分、字号不变），不是拉伸。
+    // 走 scale 会把文字一起压扁，属性面板输入 80mm 宽得到一张变形的表。
+    if (c.kind === 'table' && (patch.width !== undefined || patch.height !== undefined)) {
+      const owner = this.paperFor(obj)
+      if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) + owner.left })
+      if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) + owner.top })
+      const curW = (obj.width ?? 1) * (obj.scaleX ?? 1)
+      const curH = (obj.height ?? 1) * (obj.scaleY ?? 1)
+      const w = patch.width !== undefined ? mmToPx(patch.width) : curW
+      const h = patch.height !== undefined ? mmToPx(patch.height) : curH
+      const next = this.replaceTableObject(obj, c._table ?? defaultTableSpec(3, 3), { w, h })
+      this.canvas.setActiveObject(next)
+      this.emitActive(next)
+      this.events.onDirty()
+      return
+    }
     const isText = c.kind === 'text'
     // 多标签：按「对象所属纸」的原点换算——先取归属再写入，避免先移动导致归属漂移
     const owner = this.paperFor(obj)
@@ -2009,6 +2090,149 @@ export class CanvasController {
   }
 
   /** 添加形状（椭圆/正三角/菱形/五角星）。形状统一用 kind='shape' + _shapeType 区分 */
+  // ── 表格 ────────────────────────────────────────────────
+  /**
+   * 插入表格（默认落在纸张中心）。
+   * 表格是「原子组」：整体拖动/缩放、不可解组；行列内容由 `_table` 元数据决定。
+   */
+  addTable(rows = 3, cols = 3) {
+    const r = Math.max(1, Math.min(30, rows))
+    const c = Math.max(1, Math.min(20, cols))
+    const spec = defaultTableSpec(r, c)
+    const w = mmToPx(52)
+    // 行高固定约 8mm，保证默认字号读得清；总高随行数增长
+    const h = mmToPx(8 * r + 2)
+    const group = buildTableGroup(spec, w, h)
+    const c0 = cf(group)
+    c0._table = spec
+    group.set({
+      left: this.paperCenter().x - (group.width ?? w) / 2,
+      top: this.paperCenter().y - (group.height ?? h) / 2,
+    })
+    this.finalizeObject(group, 'table', null)
+  }
+
+  /**
+   * 把 old 换成 next，保持层序、父子关系与选中态。
+   *
+   * ⚠️ 与条码 rebuild 同一个坑：顶层可以直接 remove/add，但**嵌套在编组/多选里**时必须
+   * 原位替换 `parent._objects[i]`，否则子对象（局部坐标）会被挂到画布顶层当成绝对坐标，
+   * 直接飞到工作区原点。这里用 insertAt 保持层序（不像 add 会跑到最上层）。
+   */
+  private swapInPlace(old: fabric.Object, next: fabric.Object) {
+    const parent = ((old as { group?: fabric.Object | null }).group ?? null) as fabric.Object | null
+    const siblings = parent
+      ? ((parent as unknown as { _objects?: fabric.Object[] })._objects ?? null)
+      : null
+    const at = siblings ? siblings.indexOf(old) : -1
+    if (siblings && at >= 0) {
+      siblings[at] = next
+      ;(next as { group?: fabric.Object | null }).group = parent
+      ;(old as { group?: fabric.Object | null }).group = null
+      parent!.dirty = true
+      parent!.setCoords()
+    } else {
+      const wasActive = this.canvas.getActiveObject() === old
+      const idx = this.canvas.getObjects().indexOf(old)
+      this.canvas.remove(old)
+      this.canvas.insertAt(next, idx >= 0 ? idx : this.canvas.size(), false)
+      if (wasActive) this.canvas.setActiveObject(next)
+    }
+    next.setCoords()
+    this.canvas.requestRenderAll()
+  }
+
+  /**
+   * 按 spec 重建表格（保留位置/缩放/角度/命名/锁定/选中态）。
+   * @param size 传了就用它作为新的「基几何」并把 scale 归 1（用于改宽高 / 缩放折算）
+   */
+  private replaceTableObject(
+    old: fabric.Object,
+    spec: TableSpec,
+    size?: { w: number; h: number },
+  ): fabric.Object {
+    const oc = cf(old)
+    const w = Math.max(2, size?.w ?? old.width ?? 1)
+    const h = Math.max(2, size?.h ?? old.height ?? 1)
+    const next = buildTableGroup(spec, w, h)
+    next.set({
+      left: old.left,
+      top: old.top,
+      angle: old.angle ?? 0,
+      originX: old.originX ?? 'left',
+      originY: old.originY ?? 'top',
+      scaleX: size ? 1 : (old.scaleX ?? 1),
+      scaleY: size ? 1 : (old.scaleY ?? 1),
+      opacity: old.opacity ?? 1,
+      visible: old.visible !== false,
+    })
+    const nc = cf(next)
+    nc.id = oc.id
+    nc.kind = 'table'
+    nc._name = oc._name
+    nc._locked = oc._locked
+    nc._table = spec
+    this.applyLockState(next)
+    this.swapInPlace(old, next)
+    return next
+  }
+
+  /**
+   * 把拖拽缩放留下的 scale 折算进基几何并重建。
+   * 效果 = Word 里拉表格边框：表格变大、**字号不变**、单元格重新均分。
+   */
+  private normalizeTableScaleAll() {
+    for (const o of [...this.flattenTopLevel()]) {
+      if (cf(o).kind !== 'table') continue
+      const spec = cf(o)._table
+      if (!spec) continue
+      const sx = o.scaleX ?? 1
+      const sy = o.scaleY ?? 1
+      if (Math.abs(sx - 1) < 0.005 && Math.abs(sy - 1) < 0.005) continue
+      this.replaceTableObject(o, spec, {
+        w: (o.width ?? 1) * sx,
+        h: (o.height ?? 1) * sy,
+      })
+    }
+  }
+
+  /** 修改表格内容/样式（保持尺寸与位置）；rows 若传入会先规整矩阵 */
+  setActiveTableSpec(patch: Partial<TableSpec>) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    const c = cf(obj)
+    if (c.kind !== 'table' || !c._table) return
+    const nextSpec: TableSpec = {
+      ...c._table,
+      ...patch,
+      rows: patch.rows ? normalizeRows(patch.rows) : c._table.rows,
+    }
+    const next = this.replaceTableObject(obj, nextSpec)
+    this.canvas.setActiveObject(next)
+    this.emitActive(next)
+    this.events.onDirty()
+  }
+
+  /** 表格末尾增/删行（delta 可正可负，下限 1 行） */
+  setActiveTableRowCount(delta: number) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    const c = cf(obj)
+    if (c.kind !== 'table' || !c._table) return
+    const cur = normalizeRows(c._table.rows).length
+    this.setActiveTableSpec({ rows: resizeTableRows(c._table, cur + delta).rows })
+  }
+
+  /** 表格末尾增/删列（delta 可正可负，下限 1 列） */
+  setActiveTableColCount(delta: number) {
+    const obj = this.getActiveObject()
+    if (!obj) return
+    const c = cf(obj)
+    if (c.kind !== 'table' || !c._table) return
+    const cur = normalizeRows(c._table.rows)[0].length
+    this.setActiveTableSpec({ rows: resizeTableCols(c._table, cur + delta).rows })
+  }
+
   addShape(type: ShapeType) {
     const wMm = type === 'triangle' ? 24 : 22
     const hMm = type === 'triangle' ? 21 : 22
@@ -2480,7 +2704,10 @@ export class CanvasController {
       lockMovementY: locked,
       lockScalingX: locked,
       lockScalingY: locked,
-      lockRotation: locked,
+      // 表格始终锁旋转：标签里的表格不需要转，且 PDF 矢量绘制只保留了
+      // 「按 _table 重建」这一条确定路径（转了也不会歪，但没必要给用户一个会
+      // 让行列看起来错位的操作）。属性面板的角度框对表格同样是禁用的。
+      lockRotation: locked || cf(o).kind === 'table',
       hasControls: !locked,
       hoverCursor: locked ? 'not-allowed' : 'move',
     } as never)
@@ -3058,6 +3285,12 @@ export class CanvasController {
         if (c._letterSpacingPt) props._letterSpacingPt = c._letterSpacingPt
       }
       if (c.kind === 'shape') props._shapeType = c._shapeType ?? 'ellipse'
+      if (c.kind === 'table') {
+        // 表格：只存元数据，格线与单元格文字不入 JSON（载入时按 _table 重建）。
+        // 与条码组同理 —— 几何完全由数据推导，存档更小，也不会被当成独立元素恢复。
+        props._table = c._table
+        if (obj.type === 'group') delete (props as { objects?: unknown }).objects
+      }
       if (c.kind === 'svg') {
         props._svgInner = c._svgInner
         props._svgViewBox = c._svgViewBox
@@ -3368,6 +3601,10 @@ export class CanvasController {
       c._shapeType = (s._shapeType as ShapeType) ?? 'ellipse'
       // fabric 重建 Polygon/Ellipse/Triangle 后重新补一个圆角为 0 的兜底
     }
+    if (c.kind === 'table' && s._table && typeof s._table === 'object') {
+      const t = s._table as TableSpec
+      c._table = { ...t, rows: normalizeRows(t.rows) }
+    }
     if (c.kind === 'svg') {
       if (typeof s._svgInner === 'string') c._svgInner = s._svgInner
       c._svgViewBox = (s._svgViewBox as string | undefined) ?? '0 0 24 24'
@@ -3439,10 +3676,19 @@ export class CanvasController {
       this.restoreRecursive(objs, srcObjs)
       // 矢量条码组：JSON 里不含模块矩形，按元数据重建几何；
       // 旧模板的位图 Image 条码原样保留（兼容）。
-      for (const o of [...objs]) {
+      for (let i = 0; i < objs.length; i++) {
+        const o = objs[i]
         const c = cf(o)
         if (isBarcodeKind(c.kind) && o.type === 'group') {
           this.replaceBarcodeObject(o, c._barcodeType ?? 'code128', c._barcodeRaw ?? '', c._barcodeSettings ?? defaultSettingsFor(c._barcodeType ?? 'code128'))
+        } else if (c.kind === 'table' && o.type === 'group') {
+          // 表格：JSON 里没有格线/文字，按 _table 重建（与条码组同一套机制）。
+          // ⚠️ 宽高必须取**源 JSON** 的 width/height：空 group 载入后 fabric 会把
+          //    width/height 重算成 0，用 o.width 会得到 0 → 表格塌成一条线。
+          const src = (srcObjs[i] ?? {}) as Record<string, unknown>
+          const w = typeof src.width === 'number' && src.width > 1 ? src.width : mmToPx(52)
+          const h = typeof src.height === 'number' && src.height > 1 ? src.height : mmToPx(26)
+          this.replaceTableObject(o, c._table ?? defaultTableSpec(3, 3), { w, h })
         }
       }
       // 载入后重建"纸卡"背景 + 刷新纸外对象的半透明视觉

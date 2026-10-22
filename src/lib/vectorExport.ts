@@ -16,6 +16,7 @@ import { pxToMm } from '@/lib/mm'
 import { pxToPt, canUseBuiltinFont } from '@/lib/textStyles'
 import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
+import { normalizeRows, type TableSpec } from '@/lib/table'
 import type { fabric } from 'fabric'
 // 引入后会给 jsPDF 原型挂上 .svg()，用于把完整 SVG 绘制为矢量路径
 import 'svg2pdf.js'
@@ -139,7 +140,7 @@ function flattenLeaves(ctrl: CanvasController): Leaf[] {
       // 若穿透成子矩形/子路径：①子对象是 group 局部坐标 → isObjectInPaper 误判纸外而丢失；
       // ②子 path 没有对应绘制分支 → 直接导出为空。
       const isBarcode = kind === 'barcode'
-      const isAtomic = isBarcode || kind === 'svg'
+      const isAtomic = isBarcode || kind === 'svg' || kind === 'table'
       if (!isAtomic && o.type === 'group' && Array.isArray(children)) {
         if (!insideGroup && !ctrl.isObjectInPaper(o)) continue
         walk(children, true)
@@ -774,6 +775,103 @@ function drawBarcodeVector(doc: jsPDF, o: Leaf, ctrl: CanvasController, box: Box
   }
 }
 
+/**
+ * 表格 → 矢量：外框 / 内网格线 / 表头底色 / 单元格文字全部按 `_table` 重建。
+ *
+ * 为什么不像普通编组那样穿透成子对象：group 内的格线与文字是**局部坐标**，
+ * 穿透后每条线都要重新累乘父级变换，且表格的语义（行列/表头/对齐）本来就在
+ * `_table` 里 —— 直接用元数据重画，坐标与样式都只有一处真相。
+ */
+function drawTableVector(doc: jsPDF, o: Leaf) {
+  const spec = (o as unknown as { _table?: TableSpec })._table
+  if (!spec) return
+  const rows = normalizeRows(spec.rows)
+  const nR = rows.length
+  const nC = rows[0].length
+  const box = leafBox(o)
+  const angle = box.angleDeg
+  const { w, h } = box
+  if (w <= 0.01 || h <= 0.01) return
+
+  const x0 = box.left
+  const y0 = box.top
+  // 线宽：borderWidth 是画布 px，且画布上设了 strokeUniform（不随缩放变粗）→
+  // 这里也用「画布 px → mm」的恒等换算，预览与打印才一致。
+  const bwMm = Math.max(0.02, pxToMm(Math.max(0.2, spec.borderWidth ?? 1)))
+  const border = parseColor(spec.borderColor) ?? [0, 0, 0]
+  const colW = w / nC
+  const rowH = h / nR
+  const padMm = Math.max(0, Math.min(10, spec.paddingMm ?? 1.2))
+  const headerRow = spec.headerRow !== false
+  const headerBg = parseColor(spec.headerBg ?? '#f1f5f9')
+  const align = spec.align ?? 'left'
+
+  /** 表格局部坐标(mm) → 世界坐标(mm)（表格锁定旋转，正常 angle=0；这里仍按通用逻辑处理） */
+  const at = (lx: number, ly: number): [number, number] =>
+    angle ? rot(box.cx, box.cy, x0 + lx, y0 + ly, angle) : [x0 + lx, y0 + ly]
+
+  // ① 表头底色
+  if (headerRow && headerBg) {
+    doc.setFillColor(headerBg[0], headerBg[1], headerBg[2])
+    fillPoly(doc, [at(0, 0), at(w, 0), at(w, rowH), at(0, rowH)])
+  }
+
+  // ② 外框 + 内网格线
+  doc.setDrawColor(border[0], border[1], border[2])
+  doc.setLineWidth(bwMm)
+  const line = (ax: number, ay: number, bx: number, by: number) => {
+    const [p1x, p1y] = at(ax, ay)
+    const [p2x, p2y] = at(bx, by)
+    doc.line(n(p1x), n(p1y), n(p2x), n(p2y))
+  }
+  line(0, 0, w, 0)
+  line(0, h, w, h)
+  line(0, 0, 0, h)
+  line(w, 0, w, h)
+  for (let r = 1; r < nR; r++) line(0, r * rowH, w, r * rowH)
+  for (let c = 1; c < nC; c++) line(c * colW, 0, c * colW, h)
+
+  // ③ 单元格文字（按列宽折行、垂直居中；与画布 Textbox 的排版规则一致）
+  const sample = hrtTextChild(o)
+  const fontSizePt = Math.max(1, spec.fontSizePt ?? 9)
+  const lineHMm = (fontSizePt / 72) * 25.4 * 1.15
+  const maxTextW = Math.max(0.5, colW - padMm * 2)
+  for (let r = 0; r < nR; r++) {
+    for (let c = 0; c < nC; c++) {
+      const text = rows[r][c]
+      if (!text) continue
+      const isBoldCell = !!spec.bold || (headerRow && r === 0)
+      const pdfFont = pdfFontFor(sample ?? o, text)
+      const useBuiltinBold = pdfFont !== FONT_ALIAS && isBoldCell
+      doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
+      doc.setFontSize(fontSizePt)
+      doc.setTextColor(0, 0, 0)
+      const lines = doc.splitTextToSize(text, maxTextW) as string[]
+      const cellL = c * colW
+      const cellCenterY = r * rowH + rowH / 2
+      const startY = cellCenterY - ((lines.length - 1) * lineHMm) / 2
+      const lx =
+        align === 'center' ? cellL + colW / 2 : align === 'right' ? cellL + colW - padMm : cellL + padMm
+      for (let i = 0; i < lines.length; i++) {
+        const [px, py] = at(lx, startY + i * lineHMm)
+        const opts: Record<string, unknown> = {
+          align,
+          baseline: 'middle',
+          ...(angle ? { angle: -angle } : {}),
+        }
+        // 粗体：与 drawTextObject 同一套 —— 内置字体用真实 bold 字重，
+        // 内嵌黑体没有 bold 版，用 PDF 原生「填充+描边」一次成稿（绝不重复绘制两遍）。
+        if (isBoldCell && !useBuiltinBold) {
+          doc.setDrawColor(0, 0, 0)
+          doc.setLineWidth(fontSizePt * MM_PER_PT * 0.05)
+          opts.renderingMode = 'fillThenStroke'
+        }
+        doc.text(lines[i], n(px), n(py), opts)
+      }
+    }
+  }
+}
+
 /* ── 分派：画一个叶子对象 ──────────────────────────── */
 
 async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
@@ -789,6 +887,10 @@ async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
   }
   if (kind === 'barcode') {
     drawImageLeaf(doc, o, ctrl, true)
+    return
+  }
+  if (kind === 'table') {
+    drawTableVector(doc, o)
     return
   }
   if (kind === 'rect' || type === 'rect') {
@@ -830,6 +932,19 @@ function pageChars(ctrl: CanvasController): string {
   const parts: string[] = []
   for (const o of flattenLeaves(ctrl)) {
     const kind = (o as unknown as { kind?: string }).kind
+    // 表格的文字在 _table 里（组内子对象不参与导出），必须单独收进来，
+    // 否则含中文的表格导出时子集字体里没有这些字 → 打印成空白/方框。
+    if (kind === 'table') {
+      const spec = (o as unknown as { _table?: TableSpec })._table
+      if (!spec) continue
+      const sample = hrtTextChild(o) ?? o
+      for (const row of normalizeRows(spec.rows)) {
+        for (const t of row) {
+          if (t && pdfFontFor(sample, t) === FONT_ALIAS) parts.push(t)
+        }
+      }
+      continue
+    }
     if (kind !== 'text' && kind !== 'barcode') continue
     const content = ctrl.contentStringFor(o)
     if (!content) continue

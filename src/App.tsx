@@ -35,6 +35,8 @@ import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec, BarcodeAlign } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
+import TableEditorDialog from '@/components/editor/TableEditorDialog'
+import type { TableSpec } from '@/lib/table'
 import TemplateLibrary from '@/sections/TemplateLibrary'
 import HelpCenter from '@/sections/HelpCenter'
 import { buildTemplateSpec, type LibTemplate } from '@/lib/templateLibrary'
@@ -72,6 +74,8 @@ export default function App() {
   // state
   const [paper, setPaper] = useState<PaperSize>(DEFAULT_PAPER)
   const [tool, setTool] = useState<ToolType | null>(null)
+  /** 表格「编辑单元格内容」对话框 */
+  const [tableEditorOpen, setTableEditorOpen] = useState(false)
   const [active, setActive] = useState<ActiveObject | null>(null)
   // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态。
   // 在 effect 中同步，避免渲染期写 ref（并发模式下会被丢弃且属反模式）。
@@ -913,6 +917,32 @@ export default function App() {
   }, [])
 
   // ── 属性操作 ────────────────────────────────────────────
+  /** 插入表格（行列数由左侧工具栏的网格选择器给出，像 Word） */
+  const onInsertTable = useCallback((tableRows: number, tableCols: number) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.pushHistory()
+    ctrl.addTable(tableRows, tableCols)
+  }, [])
+  /** 表格：改内容/样式（行列、字号、边框…）；一次编辑会话只压一条历史 */
+  const onTableSpecChange = useCallback((patch: Partial<TableSpec>) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    ctrl.setActiveTableSpec(patch)
+  }, [])
+  const onTableRowDelta = useCallback((delta: number) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    ctrl.setActiveTableRowCount(delta)
+  }, [])
+  const onTableColDelta = useCallback((delta: number) => {
+    const ctrl = ctrlRef.current
+    if (!ctrl) return
+    ctrl.beginFieldEdit()
+    ctrl.setActiveTableColCount(delta)
+  }, [])
   const onGeometry = useCallback(
     (patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle'>>) => {
       const ctrl = ctrlRef.current
@@ -1576,6 +1606,7 @@ export default function App() {
           onToolChange={setTool}
           onPickImage={onPickImage}
           onOpenAssets={() => setAssetsOpen((v) => !v)}
+          onInsertTable={onInsertTable}
         />
 
         {/* 素材库面板（本地素材，点击即插入画布中心） */}
@@ -1867,6 +1898,10 @@ export default function App() {
             onStrokeColorChange={onStrokeColorChange}
             onFillColorChange={onFillColorChange}
             onTextRegionChange={onTextRegionChange}
+            onTableSpecChange={onTableSpecChange}
+            onTableRowDelta={onTableRowDelta}
+            onTableColDelta={onTableColDelta}
+            onOpenTableEditor={() => setTableEditorOpen(true)}
             objectCount={objectCount}
           />
         )}
@@ -1923,6 +1958,10 @@ export default function App() {
             onStrokeColorChange={onStrokeColorChange}
             onFillColorChange={onFillColorChange}
             onTextRegionChange={onTextRegionChange}
+                onTableSpecChange={onTableSpecChange}
+                onTableRowDelta={onTableRowDelta}
+                onTableColDelta={onTableColDelta}
+                onOpenTableEditor={() => setTableEditorOpen(true)}
                 objectCount={objectCount}
                 bare
               />
@@ -1941,6 +1980,19 @@ export default function App() {
         onSelectRow={selectRow}
         onClearData={clearData}
       />
+
+      {/* 表格：编辑单元格内容。只在打开时挂载 —— 行列数据天然是最新的，
+          不需要在 effect 里同步 props（也避开受控输入回跳的老坑） */}
+      {tableEditorOpen && active?.kind === 'table' && active.table && (
+        <TableEditorDialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setTableEditorOpen(false)
+          }}
+          spec={active.table}
+          onChange={onTableSpecChange}
+        />
+      )}
 
       <BatchDialog
         open={batchMode !== null}

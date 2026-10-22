@@ -1,7 +1,7 @@
 // 标签编辑器 — 类型定义
 
 /** 画布元素类型（条码统一为 barcode，具体码制见 _barcodeType） */
-export type ElementKind = 'text' | 'barcode' | 'rect' | 'line' | 'image' | 'shape' | 'svg'
+export type ElementKind = 'text' | 'barcode' | 'rect' | 'line' | 'image' | 'shape' | 'svg' | 'table'
 
 /** 形状子类型（kind === 'shape' 时的具体形状） */
 export type ShapeType = 'ellipse' | 'triangle' | 'diamond' | 'star'
@@ -51,6 +51,7 @@ export type ToolType =
   | 'shape-triangle'
   | 'shape-diamond'
   | 'shape-star'
+  | 'table'
   | 'upload'
 
 /** 数据行（表头 -> 单元格值） */
