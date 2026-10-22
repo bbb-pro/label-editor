@@ -79,16 +79,27 @@ const CANVAS_TO_PDF_FONT: Record<string, string> = {
  *
  * ⚠️ 画布上「基线到基线」的距离**不是** `fontSize × lineHeight`：
  *    `getHeightOfLine(i) = fontSize × lineHeight × 1.13`
- *    首行基线距文字盒顶 = `getHeightOfLine / lineHeight = fontSize × 1.13`
- *    （见 fabric `_getHeightOfLine` / `_renderTextCommon`：`top + lineHeights + maxHeight`）
- *
  * 早期 PDF 只按 `fontSize × lineHeight` 排行 → 行距比画布小 13%：
  * 20px/1.35 的文本画布行距 30.51px、PDF 只有 27px，每行差 3.5px，
  * 5 行文本累计偏 14px（≈3.7mm）→ 越往下越往"上"跑，最终压在表格线/下划线上。
- * 首行基线也用了 0.86em（≈17.2px）而非 1.13em（22.6px）→ 整体再高 1.4mm。
- * 这两处必须与 fabric 同口径，导出才真正"所见即所得"。
  */
 const FABRIC_LINE_MULT = 1.13
+
+/**
+ * fabric 的「字号分数」（`fabric.Text._fontSizeFraction`，固定 0.222）。
+ *
+ * ⚠️ 首行基线的位置还有第二层修正 —— `_renderChars` 里：
+ *      `top -= lineHeight * this._fontSizeFraction / this.lineHeight`
+ *    也就是把 `_renderTextCommon` 算出的行顶**再往上抬 0.222 × 行高**。
+ *    于是「文字盒顶 → 首行基线」= `fontSize × 1.13 × (1 − 0.222)` ≈ **0.879 em**。
+ *    只按 1.13em 算会让整块文字**偏下 0.25em**（20px 字 ≈ 1.3mm）—— 用户反馈的「PDF 文字偏下、
+ *    PNG 却完全一致」就是这个：行距已经对了，锚点多了那 22%。
+ *    这条修正对每一行都同样生效，所以它只是一个常量偏移。
+ */
+const FABRIC_FONT_SIZE_FRACTION = 0.222
+/** 文字盒顶 → 首行基线（em 倍数）：0.879 */
+const FABRIC_ASCENT_MULT = FABRIC_LINE_MULT * (1 - FABRIC_FONT_SIZE_FRACTION)
+
 
 /**
  * 取某对象应使用的 PDF 字体名。
@@ -409,11 +420,13 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
 
   // 文本区域若有背景/描边盒，先画（若用户设置了 textBackgroundColor 由 fabric 用 styles 渲染，此简版忽略，
   // 仅处理全局 stroke 边框——多数文本无框）
-  // 行距与首行基线：必须与 fabric 的排版同口径（含 1.13 的行高系数），
-  // 否则行距会比画布小 13%，多行文本逐行上漂、压到线条上。详见 FABRIC_LINE_MULT。
+  // 行距与首行基线：必须与 fabric 的排版同口径
+  //   · 行距 = fontSize × lineHeight × 1.13
+  //   · 首行基线 = 盒顶 + fontSize × 1.13 × (1 − 0.222)  ← 别漏了 0.222 那层修正
+  // 详见 FABRIC_LINE_MULT / FABRIC_FONT_SIZE_FRACTION 的注释。
   const emMm = pxToMm(fontSizePx) // 1em 的字身高度(mm)
   const lineLead = emMm * lineHeightF * FABRIC_LINE_MULT // 基线到基线
-  const ascent = emMm * FABRIC_LINE_MULT // 首行基线距文字盒顶
+  const ascent = emMm * FABRIC_ASCENT_MULT // 首行基线距文字盒顶
 
   // 断行：优先复用 fabric 的换行结果（与画布逐行一致），并取它算好的行宽
   const fabricLines = fabricWrappedLines(it, content)
@@ -720,11 +733,12 @@ function drawImageLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController, asBarcode: b
     drawBarcodeVector(doc, o, ctrl, box)
     return
   }
-  // 普通图片：直接用对象缓存图源
+  // 普通图片：直接用对象缓存图源。尺寸取自身 width/height（包围盒含描边、且旋转后会宽高互换）
   const img = o as unknown as fabric.Image & { _element?: { src?: string } }
   if (!img._element?.src) return
   const url = img._element.src
-  doc.addImage(url, 'PNG', n(box.left), n(box.top), n(box.w), n(box.h), undefined, 'FAST')
+  const { w, h } = ownSizeMm(o)
+  doc.addImage(url, 'PNG', n(box.cx - w / 2), n(box.cy - h / 2), n(w), n(h), undefined, 'FAST')
 }
 
 /** 把 SVG 字符串解析为可用的 SVG 元素（svg2pdf 只接受元素不接受字符串） */
@@ -935,7 +949,9 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
   const sample = hrtTextChild(o)
   const fontSizePt = Math.max(1, spec.fontSizePt ?? 9)
   // 单元格多行时同样要按 fabric 的 1.13 行高系数排（table.ts 里单元格 lineHeight 固定 1.15）
-  const lineHMm = (fontSizePt / 72) * 25.4 * 1.15 * FABRIC_LINE_MULT
+  const emMm = (fontSizePt / 72) * 25.4
+  const lineHMm = emMm * 1.15 * FABRIC_LINE_MULT
+  const ascentMm = emMm * FABRIC_ASCENT_MULT
   for (let r = 0; r < nR; r++) {
     for (let c = 0; c < nC; c++) {
       const text = rows[r][c]
@@ -951,15 +967,18 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
       const lines = doc.splitTextToSize(text, maxTextW) as string[]
       const cellL = colX[c]
       const cellCenterY = rowY[r] + rowSpans[r] / 2
-      const startY = cellCenterY - ((lines.length - 1) * lineHMm) / 2
+      // 与画布同口径：单元格 Textbox 是 originY=center 放在格心，块高 = (n−1)·行距 + 一个字身，
+      // 首行基线 = 块顶 + 0.879em。⚠️ 不要用 jsPDF 的 baseline:'middle' —— 它按 fontSize/2 折算，
+      // 比画布低约 0.19em（9pt 字 ≈ 0.6mm），小字号单元格里看得出来「文字偏下」。
+      const blockH = (lines.length - 1) * lineHMm + emMm * FABRIC_LINE_MULT
+      const blockTop = cellCenterY - blockH / 2
       const lx =
         align === 'center' ? cellL + cellW / 2 : align === 'right' ? cellL + cellW - padMm : cellL + padMm
       for (let i = 0; i < lines.length; i++) {
-        const [px, py] = at(lx, startY + i * lineHMm)
+        const [px, py] = at(lx, blockTop + ascentMm + i * lineHMm)
         const opts: Record<string, unknown> = {
           align,
-          baseline: 'middle',
-          ...(angle ? { angle: -angle } : {}),
+          ...(angle ? { angle } : {}),
         }
         // 粗体：与 drawTextObject 同一套 —— 内置字体用真实 bold 字重，
         // 内嵌黑体没有 bold 版，用 PDF 原生「填充+描边」一次成稿（绝不重复绘制两遍）。
