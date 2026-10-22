@@ -264,7 +264,7 @@ function setOrigin(x: number, y: number) {
 
 function leafBox(o: Leaf): Box {
   const rect = o.getBoundingRect(true)
-  const angleDeg = ((o.angle ?? 0) % 360 + 360) % 360
+  const angleDeg = totalAngleOf(o)
   const left = rect.left - originX
   const top = rect.top - originY
   return {
@@ -306,6 +306,40 @@ function rot(cx: number, cy: number, x: number, y: number, deg: number): [number
   return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos]
 }
 
+/**
+ * 对象「未旋转」的自身尺寸（含父链缩放，mm）。
+ *
+ * ⚠️ **不要**用 `leafBox(o).w/h` 当几何尺寸：`getBoundingRect` 返回的是**旋转后**的
+ * 轴对齐包围盒，转 90° 时 w/h 会被互换、转 45° 时会被放大 √2 倍；再绕中心转一次
+ * 就画成了「更大的框转一次」。典型的两个灾难：
+ *   · 竖线（width=113, height=0, angle=90°）→ 包围盒宽≈线宽 1.5px → 导出成 0.4mm 的点，肉眼「没了」；
+ *   · 多行文本 → 首行锚点取包围盒顶，整体朝对角线方向漂移。
+ * 自身尺寸 + `leafBox().cx/cy`（旋转不改变中心）才是正确基准。
+ */
+function ownSizeMm(o: Leaf): { w: number; h: number } {
+  const s = totalScaleOf(o)
+  return { w: pxToMm((o.width ?? 0) * s.x), h: pxToMm((o.height ?? 0) * s.y) }
+}
+
+/**
+ * 「含父容器」的累计旋转角度。
+ *
+ * fabric 里组内子对象的 `angle` 是**相对组**的，最终朝向 = 子角度 + 父链角度之和
+ * （仅在缩放均匀时严格成立；非均匀缩放会变成剪切，本导出器不支持剪切，见文末说明）。
+ * 只取 `o.angle` 会让「把整个编组转 30°」后组内文字/线条在 PDF 里**没转**，
+ * 位置却按包围盒算对了 —— 看起来就是「转过的编组导出后打散错位」。
+ */
+function totalAngleOf(o: Leaf): number {
+  let a = o.angle ?? 0
+  let p = (o as unknown as { group?: fabric.Object | null }).group ?? null
+  let depth = 0
+  while (p && depth++ < 16) {
+    a += p.angle ?? 0
+    p = (p as unknown as { group?: fabric.Object | null }).group ?? null
+  }
+  return ((a % 360) + 360) % 360
+}
+
 function rotPts(cx: number, cy: number, pts: Array<[number, number]>, deg: number): Array<[number, number]> {
   return pts.map(([x, y]) => rot(cx, cy, x, y, deg))
 }
@@ -340,10 +374,12 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   if (!content) return
   const it = o as unknown as fabric.Textbox
   const box = leafBox(o)
+  // 含父链缩放：编组里的文本也按真实比例出字号/行宽
+  const scl = totalScaleOf(o)
 
-  const fontSizePx = (it.fontSize ?? 12) * (it.scaleY ?? 1)
+  const fontSizePx = (it.fontSize ?? 12) * scl.y
   const fontSizePt = pxToPt(fontSizePx)
-  const wrapWmm = pxToMm((it.width ?? 1) * (it.scaleX ?? 1))
+  const wrapWmm = pxToMm((it.width ?? 1) * scl.x)
   const charSpacing = it.charSpacing ?? 0
 
   const isBold =
@@ -385,7 +421,7 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   if (fabricLines) {
     for (let i = 0; i < fabricLines.length; i++) {
       const raw = typeof it.getLineWidth === 'function' ? it.getLineWidth(i) : NaN
-      pushLine(fabricLines[i], Number.isFinite(raw) ? pxToMm(raw * (it.scaleX ?? 1)) : NaN)
+      pushLine(fabricLines[i], Number.isFinite(raw) ? pxToMm(raw * scl.x) : NaN)
     }
   } else {
     for (const para of content.split('\n')) {
@@ -397,26 +433,36 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   }
   if (lines.length === 0) lines.push('')
 
-  // 垂直锚点：fabric 文本以对象高为盒，一般顶部对齐。这里以盒顶为首行“字身顶”
-  //（Textbox 无垂直对齐，文字贴顶渲染）
-  const topY = box.top
+  // 垂直锚点：以「未旋转」盒顶为首行字身顶（Textbox 无垂直对齐，文字贴顶渲染）。
+  // ⚠️ 旋转后必须回到「中心 + 自身尺寸」重建：
+  //    getBoundingRect 的 left/top 是旋转后包围盒的角点（转 45° 时离真实盒顶差 (√2−1)·尺寸/2），
+  //    拿它当锚点会让整块文字沿对角线漂移；再对每行套 angle 就变成「斜着排的一摞」。
+  //    旋转不改变中心，所以：盒顶左 = 中心 − 尺寸/2，每行落点算好后再绕中心转。
+  const boxW = pxToMm((it.width ?? 0) * scl.x)
+  const boxH = pxToMm((it.height ?? 0) * scl.y)
+  const cx = box.cx
+  const cy = box.cy
+  const left0 = cx - boxW / 2
+  const top0 = cy - boxH / 2
   const rotDeg = box.angleDeg
+  const needRot = rotDeg % 360 !== 0
 
   for (let li = 0; li < lines.length; li++) {
     const str = lines[li]
     if (!str) continue
     // baseline 第 li 行
-    const baseY = topY + ascent + li * lineLead
+    const baseY = top0 + ascent + li * lineLead
     // x 依对齐：以盒左/中/右定位。⚠️ jsPDF 的 align 用它自己的宽度（不计 charSpace），
     // 字间距下会偏，故这里用行宽自己算锚点、以左对齐绘制。
     let w = lineWmm[li]
     if (!Number.isFinite(w)) w = measureTextMm(doc, str, fontSizePt)
-    let x = box.left
-    if (align === 'center') x = box.left + Math.max(wrapWmm - w, 0) / 2
-    else if (align === 'right') x = box.left + Math.max(wrapWmm - w, 0)
+    let x = left0
+    if (align === 'center') x = left0 + Math.max(wrapWmm - w, 0) / 2
+    else if (align === 'right') x = left0 + Math.max(wrapWmm - w, 0)
 
+    const [dx, dy] = needRot ? rot(cx, cy, x, baseY, rotDeg) : [x, baseY]
     const textOpts: Record<string, unknown> = {}
-    if (rotDeg % 360 !== 0) textOpts.angle = rotDeg
+    if (needRot) textOpts.angle = rotDeg
     // 粗体：中文走内嵌子集，没有真实 bold 字重。
     // ⚠️ 绝不能用「同一行画两遍、第二遍右偏一点」的土办法 —— PDF 里那就是两串字形叠在
     //    一起（实测「蓝莓果汁」被画 2 次、两次 x 相差 0.89mm，肉眼看到的就是「文字重叠」）。
@@ -427,7 +473,7 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
       doc.setLineWidth(fontSizePt * MM_PER_PT * 0.05)
       textOpts.renderingMode = 'fillThenStroke'
     }
-    doc.text(str, n(x), n(baseY), textOpts)
+    doc.text(str, n(dx), n(dy), textOpts)
   }
   // 复位字间距，避免影响后续文本（如条码人读文字）
   doc.setCharSpace(0)
@@ -437,14 +483,22 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
 function drawRectObject(doc: jsPDF, o: Leaf) {
   const rect = o as unknown as fabric.Rect
   const box = leafBox(o)
+  const scl = totalScaleOf(o)
   const fill = parseColor((rect.fill as string) ?? 'transparent')
   const stroke = parseColor((rect.stroke as string) ?? 'transparent')
-  const swPx = (rect.strokeWidth ?? 0) * (rect.strokeUniform ? 1 : (rect.scaleX ?? 1))
+  const swPx = (rect.strokeWidth ?? 0) * (rect.strokeUniform ? 1 : scl.x)
   const hasFill = fill != null
   const hasStroke = stroke != null && swPx > 0
   if (!hasFill && !hasStroke) return
-  const rxPx = (rect.rx ?? 0) * (rect.scaleX ?? 1)
+  const rxPx = (rect.rx ?? 0) * scl.x
   const swMm = pxToMm(swPx)
+
+  // 几何盒 =「未旋转自身尺寸」+ 中心（旋转不改中心）。⚠️ 别用 boundingBox：
+  // 它把描边宽度也算进 w/h，且旋转后 w/h 已互换 → 画出来的框既偏大又被转了第二次。
+  const { w, h } = ownSizeMm(o)
+  if (w <= 0 || h <= 0) return
+  const left = box.cx - w / 2
+  const top = box.cy - h / 2
 
   const style: 'F' | 'S' | 'FD' = hasFill && hasStroke ? 'FD' : hasFill ? 'F' : 'S'
   const isRotated = box.angleDeg % 360 !== 0
@@ -456,15 +510,15 @@ function drawRectObject(doc: jsPDF, o: Leaf) {
       doc.setLineWidth(swMm)
     }
     const rxMm = pxToMm(rxPx)
-    doc.roundedRect(n(box.left), n(box.top), n(box.w), n(box.h), n(rxMm), n(rxMm), style)
+    doc.roundedRect(n(left), n(top), n(w), n(h), n(rxMm), n(rxMm), style)
     return
   }
   // 否则多边形路径（旋转 / 直角共用）
   const corners: Array<[number, number]> = [
-    [box.left, box.top],
-    [box.left + box.w, box.top],
-    [box.left + box.w, box.top + box.h],
-    [box.left, box.top + box.h],
+    [left, top],
+    [left + w, top],
+    [left + w, top + h],
+    [left, top + h],
   ]
   const pts = rotPts(box.cx, box.cy, corners, box.angleDeg)
   if (hasFill) {
@@ -482,9 +536,10 @@ function drawRectObject(doc: jsPDF, o: Leaf) {
 function drawEllipseObject(doc: jsPDF, o: Leaf) {
   const obj = o as unknown as fabric.Ellipse
   const box = leafBox(o)
+  const scl = totalScaleOf(o)
   const fill = parseColor((obj.fill as string) ?? 'transparent')
   const stroke = parseColor((obj.stroke as string) ?? 'transparent')
-  const swPx = (obj.strokeWidth ?? 0) * (obj.strokeUniform ? 1 : (obj.scaleX ?? 1))
+  const swPx = (obj.strokeWidth ?? 0) * (obj.strokeUniform ? 1 : scl.x)
   const hasFill = fill != null
   const hasStroke = stroke != null && swPx > 0
   if (!hasFill && !hasStroke) return
@@ -494,10 +549,25 @@ function drawEllipseObject(doc: jsPDF, o: Leaf) {
     doc.setDrawColor(stroke![0], stroke![1], stroke![2])
     doc.setLineWidth(pxToMm(swPx))
   }
-  const rx = box.w / 2
-  const ry = box.h / 2
-  // 椭圆不支持旋转参数 → 若旋转则退化为在局部旋转后仍按轴对齐（fabric 里椭圆旋转较少，先按不旋转画）
-  doc.ellipse(n(box.cx), n(box.cy), n(rx), n(ry), style)
+  // 半径用自身尺寸（不含描边、不受旋转影响），和矩形同一口径
+  const { w, h } = ownSizeMm(o)
+  const rx = w / 2
+  const ry = h / 2
+  if (rx <= 0 || ry <= 0) return
+  if (box.angleDeg % 360 === 0) {
+    doc.ellipse(n(box.cx), n(box.cy), n(rx), n(ry), style)
+    return
+  }
+  // jsPDF 的 ellipse() 没有旋转参数 → 采样成折线，绕中心转后再画（48 段足够平滑）
+  const SEG = 48
+  const pts: Array<[number, number]> = []
+  for (let i = 0; i < SEG; i++) {
+    const a = (Math.PI * 2 * i) / SEG
+    pts.push([box.cx + rx * Math.cos(a), box.cy + ry * Math.sin(a)])
+  }
+  const world = rotPts(box.cx, box.cy, pts, box.angleDeg)
+  if (hasFill) fillPoly(doc, world)
+  if (hasStroke) strokePoly(doc, world)
 }
 
 /** 任意闭合多边形：填充 + 描边 */
@@ -570,13 +640,14 @@ function drawShapeObject(doc: jsPDF, o: Leaf) {
     local = (o as unknown as { points: Array<{ x: number; y: number }> }).points.map((p) => [p.x, p.y] as [number, number])
   }
   if (local.length < 3) return
-  // 本地点(左上原点) → 世界 mm。先归一化到几何中心(本地 w/2,h/2)，按 scaleX/Y 缩放，
-  // 再平移到盒中心，最后按角度旋转。
+  // 本地点(左上原点) → 世界 mm。先归一化到几何中心(本地 w/2,h/2)，按 scale 缩放（含父链），
+  // 再平移到中心，最后按角度旋转 —— 这个「中心 + 自身尺寸」口径与线/矩形/文本一致。
   const box = leafBox(o)
   const centerLocalX = wLocal / 2
   const centerLocalY = hLocal / 2
-  const sx = o.scaleX ?? 1
-  const sy = o.scaleY ?? 1
+  const scl = totalScaleOf(o)
+  const sx = scl.x
+  const sy = scl.y
   const PX2MM = 25.4 / 96
   let world = local.map(([lx, ly]) => {
     const dx = (lx - centerLocalX) * sx
@@ -606,36 +677,37 @@ function drawLineObject(doc: jsPDF, o: Leaf) {
   const line = o as unknown as fabric.Line
   const stroke = parseColor((line.stroke as string) ?? '#000000')
   if (!stroke) return
-  const swPx = (line.strokeWidth ?? 0) * (line.strokeUniform ? 1 : (line.scaleX ?? 1))
+  const scl = totalScaleOf(o)
+  const swPx = (line.strokeWidth ?? 0) * (line.strokeUniform ? 1 : scl.x)
   const box = leafBox(o)
-  // fabric Line 对象坐标实际是 (x1,y1)=(0,0) 起点，(x2,y2) 在本地为相对或绝对——直接按其缓存角点不可靠。
-  // 用“两角点连线”的约定：fabric 会把线对象角点定为线的两端(水平线默认)。这里用 x1/x2,y1/y2 相对差判断斜率，
-  // 再放到盒内比例位置。
-  const x1 = line.x1 ?? 0
-  const x2 = line.x2 ?? (o.width ?? 0)
-  const y1 = line.y1 ?? 0
-  const y2 = line.y2 ?? 0
-  let p0: [number, number]
-  let p1: [number, number]
-  if (Math.abs(x2 - x1) < 1e-6) {
-    // 竖直：从盒顶中到盒底中
-    p0 = [box.cx, box.top]
-    p1 = [box.cx, box.top + box.h]
-  } else if (Math.abs(y2 - y1) < 1e-6) {
-    p0 = [box.left, box.cy]
-    p1 = [box.left + box.w, box.cy]
-  } else {
-    // 斜线：两点落到盒对角
-    p0 = [box.left, box.top]
-    p1 = [box.left + box.w, box.top + box.h]
-  }
-  const [a, b] = rotPts(box.cx, box.cy, [p0, p1], box.angleDeg)
+  // ⭐ 端点重建：fabric 的 Line 在「以对象中心为原点」的本地坐标里，两端永远是
+  //    ±(width/2, height/2)（见 `calcLinePoints`），方向只由 x1/x2、y1/y2 的**大小关系**决定；
+  //    而 width/height 是**未旋转**时的尺寸，角度只是绕中心转。
+  // ⚠️ 旧实现用 `getBoundingRect` 的 left/top + w/h 当线段两端，转 90° 的竖线就成了
+  //    「包围盒宽度 ≈ 线宽(1.5px)」的水平小线段 —— 导出后 0.4mm、肉眼等于消失。
+  //    （同一份模板里 angle=90.47 的那条竖线就是这种情况：宽 113.39、高 0。）
+  const wMm = pxToMm((line.width ?? 0) * scl.x)
+  const hMm = pxToMm((line.height ?? 0) * scl.y)
+  const xDir = (line.x1 ?? 0) <= (line.x2 ?? 0) ? -1 : 1
+  const yDir = (line.y1 ?? 0) <= (line.y2 ?? 0) ? -1 : 1
+  const halfW = (wMm / 2) * xDir
+  const halfH = (hMm / 2) * yDir
+  const p0: [number, number] = [box.cx + halfW, box.cy + halfH]
+  const p1: [number, number] = [box.cx - halfW, box.cy - halfH]
+  const [a, b] =
+    box.angleDeg % 360 !== 0 ? rotPts(box.cx, box.cy, [p0, p1], box.angleDeg) : [p0, p1]
+  // 退化（两端重合）时宽度仍要画出一个点，别让 setLineWidth(0) 变成「不可见」
   doc.setDrawColor(stroke[0], stroke[1], stroke[2])
   doc.setLineWidth(pxToMm(Math.max(swPx, 0.01)))
   doc.line(n(a[0]), n(a[1]), n(b[0]), n(b[1]))
 }
 
-/** 图片/条码绘制：条码→矢量矩形；普通图片→位图嵌入 */
+/**
+ * 图片/条码绘制：条码→矢量矩形；普通图片→位图嵌入。
+ * ⚠️ 已知局限：这两类仍是**轴对齐**绘制（addImage / 矩形不套旋转变换），
+ *    所以「旋转过的图片或条码」在 PDF 里位置按包围盒走、朝向不转。
+ *    条码本身旋转后也扫不出来，实际很少用；要做需套 PDF 变换矩阵（见 toPdfMatrix）。
+ */
 function drawImageLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController, asBarcode: boolean) {
   const box = leafBox(o)
   if (asBarcode) {
