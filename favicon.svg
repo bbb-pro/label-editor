@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="标签编辑器">
+  <title>标签编辑器</title>
+  <rect x="3" y="6.4" width="26" height="19.2" rx="2.6" fill="#ffffff" stroke="#2563eb" stroke-width="2.3"/>
+  <g fill="#0f172a">
+    <rect x="7.000" y="11.5" width="1.015" height="9.5"/>
+    <rect x="8.353" y="11.5" width="0.338" height="9.5"/>
+    <rect x="9.368" y="11.5" width="0.677" height="9.5"/>
+    <rect x="10.382" y="11.5" width="1.015" height="9.5"/>
+    <rect x="11.735" y="11.5" width="0.338" height="9.5"/>
+    <rect x="12.750" y="11.5" width="0.338" height="9.5"/>
+    <rect x="14.103" y="11.5" width="0.677" height="9.5"/>
+    <rect x="15.118" y="11.5" width="0.338" height="9.5"/>
+    <rect x="15.794" y="11.5" width="0.677" height="9.5"/>
+    <rect x="17.147" y="11.5" width="0.338" height="9.5"/>
+  </g>
+  <g fill="#94a3b8">
+    <rect x="20" y="13.4" width="6" height="1.6" rx="0.8"/>
+  </g>
+  <g fill="#cbd5e1">
+    <rect x="20" y="17.6" width="6" height="1.2" rx="0.6"/>
+    <rect x="20" y="20.0" width="3" height="1.2" rx="0.6"/>
+  </g>
+</svg>
