@@ -74,8 +74,10 @@ export default function App() {
   // state
   const [paper, setPaper] = useState<PaperSize>(DEFAULT_PAPER)
   const [tool, setTool] = useState<ToolType | null>(null)
-  /** 表格「编辑单元格内容」对话框 */
+  /** 表格对话框（内容 / 行高列宽） */
   const [tableEditorOpen, setTableEditorOpen] = useState(false)
+  /** 打开时落在哪个页签：面板「编辑内容」/「行高列宽」两个按钮各直达一页 */
+  const [tableEditorTab, setTableEditorTab] = useState<'content' | 'size'>('content')
   const [active, setActive] = useState<ActiveObject | null>(null)
   // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态。
   // 在 effect 中同步，避免渲染期写 ref（并发模式下会被丢弃且属反模式）。
@@ -942,6 +944,11 @@ export default function App() {
     if (!ctrl) return
     ctrl.beginFieldEdit()
     ctrl.setActiveTableColCount(delta)
+  }, [])
+  /** 打开表格对话框：面板两个按钮分别直达「内容」/「行高列宽」 */
+  const openTableEditor = useCallback((tab: 'content' | 'size' = 'content') => {
+    setTableEditorTab(tab)
+    setTableEditorOpen(true)
   }, [])
   const onGeometry = useCallback(
     (patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle'>>) => {
@@ -1901,7 +1908,7 @@ export default function App() {
             onTableSpecChange={onTableSpecChange}
             onTableRowDelta={onTableRowDelta}
             onTableColDelta={onTableColDelta}
-            onOpenTableEditor={() => setTableEditorOpen(true)}
+            onOpenTableEditor={openTableEditor}
             objectCount={objectCount}
           />
         )}
@@ -1961,7 +1968,7 @@ export default function App() {
                 onTableSpecChange={onTableSpecChange}
                 onTableRowDelta={onTableRowDelta}
                 onTableColDelta={onTableColDelta}
-                onOpenTableEditor={() => setTableEditorOpen(true)}
+                onOpenTableEditor={openTableEditor}
                 objectCount={objectCount}
                 bare
               />
@@ -1981,7 +1988,7 @@ export default function App() {
         onClearData={clearData}
       />
 
-      {/* 表格：编辑单元格内容。只在打开时挂载 —— 行列数据天然是最新的，
+      {/* 表格：内容 / 行高列宽。只在打开时挂载 —— 行列数据天然是最新的，
           不需要在 effect 里同步 props（也避开受控输入回跳的老坑） */}
       {tableEditorOpen && active?.kind === 'table' && active.table && (
         <TableEditorDialog
@@ -1990,6 +1997,9 @@ export default function App() {
             if (!v) setTableEditorOpen(false)
           }}
           spec={active.table}
+          widthMm={active.width}
+          heightMm={active.height}
+          initialTab={tableEditorTab}
           onChange={onTableSpecChange}
         />
       )}

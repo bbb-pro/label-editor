@@ -16,7 +16,13 @@ import { pxToMm } from '@/lib/mm'
 import { pxToPt, canUseBuiltinFont } from '@/lib/textStyles'
 import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
-import { normalizeRows, type TableSpec } from '@/lib/table'
+import {
+  normalizeRows,
+  tableColSpans,
+  tableRowSpans,
+  spanOffsets,
+  type TableSpec,
+} from '@/lib/table'
 import type { fabric } from 'fabric'
 // 引入后会给 jsPDF 原型挂上 .svg()，用于把完整 SVG 绘制为矢量路径
 import 'svg2pdf.js'
@@ -880,17 +886,21 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
   const nC = rows[0].length
   const box = leafBox(o)
   const angle = box.angleDeg
-  const { w, h } = box
+  // 自身尺寸 + 中心（不含描边、不受旋转影响）；表格锁定旋转，但编组里的表格仍可能被带着转
+  const { w, h } = ownSizeMm(o)
   if (w <= 0.01 || h <= 0.01) return
 
-  const x0 = box.left
-  const y0 = box.top
+  const x0 = box.cx - w / 2
+  const y0 = box.cy - h / 2
   // 线宽：borderWidth 是画布 px，且画布上设了 strokeUniform（不随缩放变粗）→
   // 这里也用「画布 px → mm」的恒等换算，预览与打印才一致。
   const bwMm = Math.max(0.02, pxToMm(Math.max(0.2, spec.borderWidth ?? 1)))
   const border = parseColor(spec.borderColor) ?? [0, 0, 0]
-  const colW = w / nC
-  const rowH = h / nR
+  // 行高/列宽按权重分配 —— 必须与 buildTableGroup 用同一组函数，否则预览与打印会错位
+  const colSpans = tableColSpans(spec, w)
+  const rowSpans = tableRowSpans(spec, h)
+  const colX = spanOffsets(colSpans)
+  const rowY = spanOffsets(rowSpans)
   const padMm = Math.max(0, Math.min(10, spec.paddingMm ?? 1.2))
   const headerRow = spec.headerRow !== false
   const headerBg = parseColor(spec.headerBg ?? '#f1f5f9')
@@ -903,7 +913,7 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
   // ① 表头底色
   if (headerRow && headerBg) {
     doc.setFillColor(headerBg[0], headerBg[1], headerBg[2])
-    fillPoly(doc, [at(0, 0), at(w, 0), at(w, rowH), at(0, rowH)])
+    fillPoly(doc, [at(0, 0), at(w, 0), at(w, rowSpans[0]), at(0, rowSpans[0])])
   }
 
   // ② 外框 + 内网格线
@@ -918,15 +928,14 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
   line(0, h, w, h)
   line(0, 0, 0, h)
   line(w, 0, w, h)
-  for (let r = 1; r < nR; r++) line(0, r * rowH, w, r * rowH)
-  for (let c = 1; c < nC; c++) line(c * colW, 0, c * colW, h)
+  for (let r = 1; r < nR; r++) line(0, rowY[r], w, rowY[r])
+  for (let c = 1; c < nC; c++) line(colX[c], 0, colX[c], h)
 
   // ③ 单元格文字（按列宽折行、垂直居中；与画布 Textbox 的排版规则一致）
   const sample = hrtTextChild(o)
   const fontSizePt = Math.max(1, spec.fontSizePt ?? 9)
   // 单元格多行时同样要按 fabric 的 1.13 行高系数排（table.ts 里单元格 lineHeight 固定 1.15）
   const lineHMm = (fontSizePt / 72) * 25.4 * 1.15 * FABRIC_LINE_MULT
-  const maxTextW = Math.max(0.5, colW - padMm * 2)
   for (let r = 0; r < nR; r++) {
     for (let c = 0; c < nC; c++) {
       const text = rows[r][c]
@@ -937,12 +946,14 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
       doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
       doc.setFontSize(fontSizePt)
       doc.setTextColor(0, 0, 0)
+      const cellW = colSpans[c]
+      const maxTextW = Math.max(0.5, cellW - padMm * 2)
       const lines = doc.splitTextToSize(text, maxTextW) as string[]
-      const cellL = c * colW
-      const cellCenterY = r * rowH + rowH / 2
+      const cellL = colX[c]
+      const cellCenterY = rowY[r] + rowSpans[r] / 2
       const startY = cellCenterY - ((lines.length - 1) * lineHMm) / 2
       const lx =
-        align === 'center' ? cellL + colW / 2 : align === 'right' ? cellL + colW - padMm : cellL + padMm
+        align === 'center' ? cellL + cellW / 2 : align === 'right' ? cellL + cellW - padMm : cellL + padMm
       for (let i = 0; i < lines.length; i++) {
         const [px, py] = at(lx, startY + i * lineHMm)
         const opts: Record<string, unknown> = {

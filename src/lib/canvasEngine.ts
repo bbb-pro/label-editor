@@ -2220,7 +2220,9 @@ export class CanvasController {
     const c = cf(obj)
     if (c.kind !== 'table' || !c._table) return
     const cur = normalizeRows(c._table.rows).length
-    this.setActiveTableSpec({ rows: resizeTableRows(c._table, cur + delta).rows })
+    const next = resizeTableRows(c._table, cur + delta)
+    // 行高权重必须跟着行数走，否则删行后权重数组错位、剩下的行会莫名其妙变高/变矮
+    this.setActiveTableSpec({ rows: next.rows, rowWeights: next.rowWeights })
   }
 
   /** 表格末尾增/删列（delta 可正可负，下限 1 列） */
@@ -2230,7 +2232,8 @@ export class CanvasController {
     const c = cf(obj)
     if (c.kind !== 'table' || !c._table) return
     const cur = normalizeRows(c._table.rows)[0].length
-    this.setActiveTableSpec({ rows: resizeTableCols(c._table, cur + delta).rows })
+    const next = resizeTableCols(c._table, cur + delta)
+    this.setActiveTableSpec({ rows: next.rows, colWeights: next.colWeights })
   }
 
   addShape(type: ShapeType) {

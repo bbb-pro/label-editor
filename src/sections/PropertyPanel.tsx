@@ -42,6 +42,7 @@ import {
   Hash,
   Copy,
   Table as TableIcon,
+  Columns3,
   Minus as MinusGlyph,
   Plus as PlusGlyph,
 } from 'lucide-react'
@@ -101,8 +102,8 @@ interface PropertyPanelProps {
   onTableRowDelta: (delta: number) => void
   /** 表格：末尾增删列（+1 / -1） */
   onTableColDelta: (delta: number) => void
-  /** 表格：打开「编辑单元格」对话框 */
-  onOpenTableEditor: () => void
+  /** 表格：打开对话框（默认落在「单元格内容」页，也可直达「行高/列宽」页） */
+  onOpenTableEditor: (tab?: 'content' | 'size') => void
   objectCount: number
   /** 仅内容模式：供移动端底部抽屉复用（自行包裹滚动） */
   bare?: boolean
@@ -637,10 +638,19 @@ function SelectedObjectPanel({
             color={table.borderColor ?? '#000000'}
             onPick={(c) => onTableSpecChange({ borderColor: c ?? '#000000' })}
           />
-          <Button variant="outline" size="sm" className="w-full" onClick={onOpenTableEditor}>
-            <TableIcon className="mr-1.5 h-3.5 w-3.5" />
-            编辑单元格内容
-          </Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="outline" size="sm" onClick={() => onOpenTableEditor('content')}>
+              <TableIcon className="mr-1.5 h-3.5 w-3.5" />
+              编辑内容
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => onOpenTableEditor('size')}>
+              <Columns3 className="mr-1.5 h-3.5 w-3.5" />
+              行高列宽
+            </Button>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            默认行列等分；需要不等分（比如品名宽、数量窄）就点「行高列宽」逐条调，改一条时总尺寸不变。
+          </p>
         </Section>
       )}
 
