@@ -768,7 +768,12 @@ async function drawSvgAssetLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
   const data = ctrl.svgDataFor(o)
   if (!data) return
   const box = leafBox(o)
-  if (box.w <= 0 || box.h <= 0) return
+  // 尺寸/左上角取「自身尺寸 + 中心」：bbox 在旋转后会放大（45° 时 √2 倍），
+  // 拿它当图标尺寸再转一次 = 图标被放大了还转歪。非旋转时也顺带去掉描边那点虚胖。
+  const { w, h } = ownSizeMm(o)
+  if (w <= 0 || h <= 0) return
+  const x0 = box.cx - w / 2
+  const y0 = box.cy - h / 2
   const el = parseSvgElement(data.svg)
   if (!el) return
 
@@ -777,13 +782,11 @@ async function drawSvgAssetLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
   try {
     if (angle) {
       // 绕自身中心旋转：平移到中心 → 旋转 → 平移回去
-      const cx = box.left + box.w / 2
-      const cy = box.top + box.h / 2
-      const m = new DOMMatrix().translateSelf(cx, cy).rotateSelf(angle).translateSelf(-cx, -cy)
+      const m = new DOMMatrix().translateSelf(box.cx, box.cy).rotateSelf(angle).translateSelf(-box.cx, -box.cy)
       doc.setCurrentTransformationMatrix(toPdfMatrix(m))
       rotated = true
     }
-    await doc.svg(el, { x: n(box.left), y: n(box.top), width: n(box.w), height: n(box.h) })
+    await doc.svg(el, { x: n(x0), y: n(y0), width: n(w), height: n(h) })
   } catch {
     // 个别素材解析/重绘失败时静默跳过，不影响整页其余内容
   } finally {
