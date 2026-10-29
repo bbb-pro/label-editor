@@ -10,6 +10,19 @@
     />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="https://057300.xyz/label-editor/guide/" />
+
+    <!-- GEO / AI 发现信号：语言标记、作者、发布时间、站点级 Atom（根站） -->
+    <meta name="author" content="星辰月光酿大树" />
+    <link rel="alternate" hreflang="zh-CN" href="https://057300.xyz/label-editor/guide/" />
+    <link rel="alternate" hreflang="x-default" href="https://057300.xyz/label-editor/guide/" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="包装&amp;物流工具箱 · 最新内容"
+      href="https://057300.xyz/atom.xml"
+    />
+    <meta property="article:published_time" content="2026-09-12T00:00:00+08:00" />
+    <meta property="article:modified_time" content="2026-10-29T00:00:00+08:00" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="标签编辑器" />
@@ -40,6 +53,63 @@
       src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1124987147181210"
       crossorigin="anonymous"
     ></script>
+
+    <!-- 结构化数据：文章 + 面包屑（作者、发布时间、所属站点，供 AI 判断出处与新鲜度） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "@id": "https://057300.xyz/label-editor/guide/#article",
+        "headline": "标签编辑器使用指南：从空白到打印的 6 步",
+        "name": "标签编辑器使用指南：从空白到打印的 6 步",
+        "url": "https://057300.xyz/label-editor/guide/",
+        "description": "标签编辑器快速上手指南：设置纸张尺寸、添加条码与文本、导入 Excel 批量套打、导出矢量 PDF 与高清 PNG。6 步完成一张可印刷的条码标签，无需注册，数据不出本地浏览器。",
+        "inLanguage": "zh-CN",
+        "datePublished": "2026-09-12T00:00:00+08:00",
+        "dateModified": "2026-10-29T00:00:00+08:00",
+        "author": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        },
+        "publisher": {
+          "@type": "OnlineBusiness",
+          "name": "包装&物流工具箱",
+          "url": "https://057300.xyz/",
+          "email": "312655375@qq.com"
+        },
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "标签编辑器",
+          "url": "https://057300.xyz/label-editor/"
+        },
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://057300.xyz/label-editor/guide/"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "标签编辑器",
+            "item": "https://057300.xyz/label-editor/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "使用指南",
+            "item": "https://057300.xyz/label-editor/guide/"
+          }
+        ]
+      }
+    </script>
 </head>
   <body>
     <header class="gh">
@@ -55,6 +125,10 @@
     <main>
       <article>
         <h1>标签编辑器使用指南：从空白到打印的 6 步</h1>
+        <p class="meta">
+          作者：星辰月光酿大树 · 更新于 <time datetime="2026-10-29">2026-10-29</time> ·
+          <a href="https://057300.xyz/about/">关于作者</a>
+        </p>
         <p class="lead">
           这是一份面向第一次使用的快速上手说明。跟着做 6 步，你就能得到一张可以直接印刷、扫码枪能正常识读的条码标签。
         </p>
@@ -134,6 +208,19 @@
           <li><strong>隐私</strong>：全部在浏览器本地完成，表格文件和设计稿都不会上传到服务器。</li>
         </ul>
 
+        
+        <h2>参考资料</h2>
+        <h3>标准与规范</h3>
+        <ul>
+          <li><a href="https://www.gs1.org/standards/barcodes">GS1 General Specifications（条码与 GS1 系统总规范）</a></li>
+          <li><a href="https://www.iso.org/standard/62021.html">ISO/IEC 15417 — Code 128 条码规范</a></li>
+          <li><a href="https://www.ancc.org.cn/">中国物品编码中心：商品条码与 GS1 资料</a></li>
+        </ul>
+        <p>
+          文中涉及的码制、尺寸与数据格式均以上述公开标准为准；如果你的场景有行业强制规范（如医械 UDI、GS1
+          物流单元），以对应标准的最新版本为最终依据。
+        </p>
+
         <div class="cta">
           <p style="margin-bottom: 10px">现在就做一张试试 —— 免费、无需注册、打开即用。</p>
           <a class="btn" href="/">打开标签编辑器</a>
@@ -147,6 +234,7 @@
       <a href="barcode-types.html">码制怎么选</a>
       <a href="label-sizes.html">尺寸速查</a>
       <a href="batch-print.html">批量套打</a>
+      <a href="https://057300.xyz/about/">关于本站</a>
     </footer>
   </body>
 </html>

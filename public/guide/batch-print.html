@@ -14,6 +14,19 @@
     />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="https://057300.xyz/label-editor/guide/batch-print.html" />
+
+    <!-- GEO / AI 发现信号：语言标记、作者、发布时间、站点级 Atom（根站） -->
+    <meta name="author" content="星辰月光酿大树" />
+    <link rel="alternate" hreflang="zh-CN" href="https://057300.xyz/label-editor/guide/batch-print.html" />
+    <link rel="alternate" hreflang="x-default" href="https://057300.xyz/label-editor/guide/batch-print.html" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="包装&amp;物流工具箱 · 最新内容"
+      href="https://057300.xyz/atom.xml"
+    />
+    <meta property="article:published_time" content="2026-09-12T00:00:00+08:00" />
+    <meta property="article:modified_time" content="2026-10-29T00:00:00+08:00" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="标签编辑器" />
@@ -44,6 +57,69 @@
       src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1124987147181210"
       crossorigin="anonymous"
     ></script>
+
+    <!-- 结构化数据：文章 + 面包屑（作者、发布时间、所属站点，供 AI 判断出处与新鲜度） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "@id": "https://057300.xyz/label-editor/guide/batch-print.html#article",
+        "headline": "Excel 批量套打标签：一次生成几百张不同内容的标签",
+        "name": "Excel 批量套打标签：一次生成几百张不同内容的标签",
+        "url": "https://057300.xyz/label-editor/guide/batch-print.html",
+        "description": "用 Excel 批量套打标签的完整流程：首行做表头、文本框名称与表头同名即自动绑定、{{列名}} 行内混排、流水号序列化、按行批量导出 PDF 与打印，附数字变科学计数法等常见问题处理。",
+        "inLanguage": "zh-CN",
+        "datePublished": "2026-09-12T00:00:00+08:00",
+        "dateModified": "2026-10-29T00:00:00+08:00",
+        "author": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        },
+        "publisher": {
+          "@type": "OnlineBusiness",
+          "name": "包装&物流工具箱",
+          "url": "https://057300.xyz/",
+          "email": "312655375@qq.com"
+        },
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "标签编辑器",
+          "url": "https://057300.xyz/label-editor/"
+        },
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://057300.xyz/label-editor/guide/batch-print.html"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "标签编辑器",
+            "item": "https://057300.xyz/label-editor/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "使用指南",
+            "item": "https://057300.xyz/label-editor/guide/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 3,
+            "name": "批量套打",
+            "item": "https://057300.xyz/label-editor/guide/batch-print.html"
+          }
+        ]
+      }
+    </script>
 </head>
   <body>
     <header class="gh">
@@ -59,6 +135,10 @@
     <main>
       <article>
         <h1>Excel 批量套打标签：一次生成几百张不同内容的标签</h1>
+        <p class="meta">
+          作者：星辰月光酿大树 · 更新于 <time datetime="2026-10-29">2026-10-29</time> ·
+          <a href="https://057300.xyz/about/">关于作者</a>
+        </p>
         <p class="lead">
           版式一样、内容不同 —— 这是标签制作里最常见的需求：200 个型号、500 个资产编号、一批货的批次号。
           用数据绑定，你只需要排好<strong>一张</strong>，剩下的交给表格。
@@ -180,6 +260,18 @@
         <h3>表格数据会上传到服务器吗？</h3>
         <p>不会。解析、绑定、渲染全部在你的浏览器里完成，文件不上传，断网也能用。</p>
 
+        
+        <h2>参考资料</h2>
+        <h3>延伸阅读</h3>
+        <ul>
+          <li><a href="https://www.ancc.org.cn/">中国物品编码中心：GS1-128 与序列号应用</a></li>
+          <li><a href="https://support.microsoft.com/zh-cn/office/import-data-from-a-csv-text-file">Microsoft 支持：将 CSV / 文本文件导入 Excel</a></li>
+        </ul>
+        <p>
+          文中涉及的码制、尺寸与数据格式均以上述公开标准为准；如果你的场景有行业强制规范（如医械 UDI、GS1
+          物流单元），以对应标准的最新版本为最终依据。
+        </p>
+
         <div class="cta">
           <p style="margin-bottom: 10px">排好一张模板，剩下的交给表格 —— 打开编辑器试试。</p>
           <a class="btn" href="/">打开标签编辑器</a>
@@ -193,6 +285,7 @@
       <a href="barcode-types.html">码制怎么选</a>
       <a href="label-sizes.html">尺寸速查</a>
       <a href="batch-print.html">批量套打</a>
+      <a href="https://057300.xyz/about/">关于本站</a>
     </footer>
   </body>
 </html>

@@ -1,7 +1,15 @@
 User-agent: *
 Allow: /
 
-# 本文件位于 /label-editor/ 子目录。注意：搜索引擎只读取域名根目录的
+# 本文件位于 /label-editor/ 子目录。注意：搜索引擎与 AI 爬虫只读取域名根目录的
 # https://057300.xyz/robots.txt，本文件仅作声明用途。
-# 编辑器为纯前端应用，所有页面均可索引
+#
+# 根目录 robots.txt 的策略（Cloudflare Managed content signals）：
+#   Content-Signal: search=yes, ai-train=no, use=reference
+#   → 允许搜索与 AI 检索（Googlebot / Bingbot / OAI-SearchBot / Claude-SearchBot /
+#     PerplexityBot 均为 200），禁止训练类爬虫（GPTBot / ClaudeBot / CCBot 等返回 403）。
+#   这个取舍对本子站同样生效：可被 AI 检索引用，但不用于模型训练。
+#
+# LLMs 说明（页面级补充，站点级见 https://057300.xyz/llms.txt）：
+#   https://057300.xyz/label-editor/llms.txt
 Sitemap: https://057300.xyz/label-editor/sitemap.xml

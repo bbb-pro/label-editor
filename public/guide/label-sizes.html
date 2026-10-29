@@ -14,6 +14,19 @@
     />
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <link rel="canonical" href="https://057300.xyz/label-editor/guide/label-sizes.html" />
+
+    <!-- GEO / AI 发现信号：语言标记、作者、发布时间、站点级 Atom（根站） -->
+    <meta name="author" content="星辰月光酿大树" />
+    <link rel="alternate" hreflang="zh-CN" href="https://057300.xyz/label-editor/guide/label-sizes.html" />
+    <link rel="alternate" hreflang="x-default" href="https://057300.xyz/label-editor/guide/label-sizes.html" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="包装&amp;物流工具箱 · 最新内容"
+      href="https://057300.xyz/atom.xml"
+    />
+    <meta property="article:published_time" content="2026-09-12T00:00:00+08:00" />
+    <meta property="article:modified_time" content="2026-10-29T00:00:00+08:00" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="标签编辑器" />
@@ -44,6 +57,69 @@
       src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1124987147181210"
       crossorigin="anonymous"
     ></script>
+
+    <!-- 结构化数据：文章 + 面包屑（作者、发布时间、所属站点，供 AI 判断出处与新鲜度） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "TechArticle",
+        "@id": "https://057300.xyz/label-editor/guide/label-sizes.html#article",
+        "headline": "标签尺寸速查表：面单 / 货架 / 产品 / 资产",
+        "name": "标签尺寸速查表：面单 / 货架 / 产品 / 资产",
+        "url": "https://057300.xyz/label-editor/guide/label-sizes.html",
+        "description": "常用标签尺寸对照表：快递电子面单 100×150、仓储货架 100×50、产品标签 50×30、资产标签 50×20，以及 A4 不干胶分页规格、203/300/600 DPI 怎么选、标签打偏的排查方法。",
+        "inLanguage": "zh-CN",
+        "datePublished": "2026-09-12T00:00:00+08:00",
+        "dateModified": "2026-10-29T00:00:00+08:00",
+        "author": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        },
+        "publisher": {
+          "@type": "OnlineBusiness",
+          "name": "包装&物流工具箱",
+          "url": "https://057300.xyz/",
+          "email": "312655375@qq.com"
+        },
+        "isPartOf": {
+          "@type": "WebSite",
+          "name": "标签编辑器",
+          "url": "https://057300.xyz/label-editor/"
+        },
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://057300.xyz/label-editor/guide/label-sizes.html"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+          {
+            "@type": "ListItem",
+            "position": 1,
+            "name": "标签编辑器",
+            "item": "https://057300.xyz/label-editor/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 2,
+            "name": "使用指南",
+            "item": "https://057300.xyz/label-editor/guide/"
+          },
+          {
+            "@type": "ListItem",
+            "position": 3,
+            "name": "尺寸速查",
+            "item": "https://057300.xyz/label-editor/guide/label-sizes.html"
+          }
+        ]
+      }
+    </script>
 </head>
   <body>
     <header class="gh">
@@ -59,6 +135,10 @@
     <main>
       <article>
         <h1>标签尺寸速查表：面单 / 货架 / 产品 / 资产</h1>
+        <p class="meta">
+          作者：星辰月光酿大树 · 更新于 <time datetime="2026-10-29">2026-10-29</time> ·
+          <a href="https://057300.xyz/about/">关于作者</a>
+        </p>
         <p class="lead">
           下表汇总了国内仓储物流与零售场景最常见的标签规格。数值为市售常见值，<strong>实际采购时请以实物的模切尺寸为准</strong>（不同品牌会有 1~2mm 差异）。
         </p>
@@ -205,6 +285,18 @@
         <h3>标签很小，条码放不下怎么办？</h3>
         <p>三条路：改用密度更高的码制（如 DataMatrix）、缩短编码内容（去掉冗余前缀）、或提高打印精度到 600 DPI。如果都不行，说明标签尺寸确实需要加大。</p>
 
+        
+        <h2>参考资料</h2>
+        <h3>标准与规范</h3>
+        <ul>
+          <li><a href="https://www.iso.org/standard/36631.html">ISO 216 — A 系列纸张尺寸（A4 不干胶分页的依据）</a></li>
+          <li><a href="https://www.gs1.org/standards/logistics-label">GS1 Logistics Label（物流标签尺寸与内容规范）</a></li>
+        </ul>
+        <p>
+          文中涉及的码制、尺寸与数据格式均以上述公开标准为准；如果你的场景有行业强制规范（如医械 UDI、GS1
+          物流单元），以对应标准的最新版本为最终依据。
+        </p>
+
         <div class="cta">
           <p style="margin-bottom: 10px">量好尺寸了？填入纸张设置，几步就能排好一张。</p>
           <a class="btn" href="/">打开标签编辑器</a>
@@ -218,6 +310,7 @@
       <a href="barcode-types.html">码制怎么选</a>
       <a href="label-sizes.html">尺寸速查</a>
       <a href="batch-print.html">批量套打</a>
+      <a href="https://057300.xyz/about/">关于本站</a>
     </footer>
   </body>
 </html>

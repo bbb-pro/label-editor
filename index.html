@@ -20,6 +20,18 @@
     <meta name="format-detection" content="telephone=no" />
     <link rel="canonical" href="https://057300.xyz/label-editor/" />
 
+    <!-- GEO / AI 发现信号：语言标记、作者、内容更新时间、站点级 Atom（根站） -->
+    <meta name="author" content="星辰月光酿大树" />
+    <link rel="alternate" hreflang="zh-CN" href="https://057300.xyz/label-editor/" />
+    <link rel="alternate" hreflang="x-default" href="https://057300.xyz/label-editor/" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="包装&amp;物流工具箱 · 最新内容"
+      href="https://057300.xyz/atom.xml"
+    />
+    <meta property="article:modified_time" content="2026-10-29T00:00:00+08:00" />
+
     <!-- 站点图标 -->
     <link rel="icon" href="./favicon.ico" sizes="32x32" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
@@ -72,6 +84,20 @@
         font-size: 26px;
         font-weight: 700;
         letter-spacing: -0.01em;
+      }
+      #seo-intro h2 {
+        margin: 28px 0 10px;
+        font-size: 18px;
+        font-weight: 700;
+      }
+      #seo-intro h3 {
+        margin: 18px 0 6px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #1e293b;
+      }
+      #seo-intro time {
+        font-variant-numeric: tabular-nums;
       }
       #seo-intro p {
         margin: 0 0 20px;
@@ -148,16 +174,30 @@
       {
         "@context": "https://schema.org",
         "@type": "WebApplication",
+        "@id": "https://057300.xyz/label-editor/#app",
         "name": "标签编辑器",
         "alternateName": "Label Editor",
         "url": "https://057300.xyz/label-editor/",
-        "description": "免费在线条码标签设计与打印工具，支持 42 种条码与二维码、任意毫米尺寸纸张、Excel 批量套打，可导出矢量 PDF 与高清 PNG。",
+        "description": "免费在线标签编辑器，无需注册。拖拽即可设计条码标签，支持 Code128、QR Code、EAN-13、DataMatrix、PDF417 等 42 种条码与二维码，可自定义任意毫米尺寸纸张，导入 Excel 批量套打，导出矢量 PDF 与 384 DPI 高清 PNG，数据全部保存在本地浏览器。",
         "applicationCategory": "BusinessApplication",
         "applicationSubCategory": "标签设计与打印",
         "operatingSystem": "Web Browser",
         "browserRequirements": "需要支持 canvas 的现代浏览器（Chrome / Edge / Safari / Firefox）",
         "inLanguage": "zh-CN",
         "isAccessibleForFree": true,
+        "datePublished": "2026-09-12T00:00:00+08:00",
+        "dateModified": "2026-10-29T00:00:00+08:00",
+        "author": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "包装&物流工具箱",
+          "url": "https://057300.xyz/"
+        },
         "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
         "featureList": [
           "42 种条码与二维码（Code128 / QR Code / EAN-13 / DataMatrix / PDF417 等）",
@@ -167,6 +207,57 @@
           "384 DPI 高清 PNG 导出",
           "全程本地运行，数据不上传"
         ]
+      }
+    </script>
+
+    <!-- 结构化数据：WebSite（站点实体，供 AI 判断页面属于哪个站点） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "@id": "https://057300.xyz/label-editor/#website",
+        "name": "标签编辑器",
+        "alternateName": "Label Editor · 在线条码标签设计与打印",
+        "url": "https://057300.xyz/label-editor/",
+        "description": "在线条码标签设计与打印工具，支持 42 种条码二维码、任意毫米纸张、Excel 批量套打，导出矢量 PDF 与高清 PNG。",
+        "inLanguage": "zh-CN",
+        "publisher": { "@id": "https://057300.xyz/label-editor/#publisher" }
+      }
+    </script>
+
+    <!-- 结构化数据：Organization（发布方实体 + 联系方式 + 服务范围） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "OnlineBusiness",
+        "@id": "https://057300.xyz/label-editor/#publisher",
+        "name": "包装&物流工具箱",
+        "alternateName": "Packaging & Logistics Toolbox",
+        "url": "https://057300.xyz/",
+        "description": "免费在线的包装设计与物流测算工具集：纸盒刀模设计、集装箱装柜计算、条码标签设计、Markdown 编辑，全部在浏览器内运行。",
+        "email": "312655375@qq.com",
+        "areaServed": "Worldwide",
+        "knowsLanguage": ["zh-CN", "en"],
+        "founder": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        }
+      }
+    </script>
+
+    <!-- 结构化数据：作者实体（Google 要求“谁写的”，AI 引用时用来判断可信度） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Person",
+        "@id": "https://057300.xyz/#author",
+        "name": "星辰月光酿大树",
+        "jobTitle": "独立开发者",
+        "url": "https://057300.xyz/about/",
+        "email": "312655375@qq.com",
+        "knowsAbout": ["标签设计", "条码与二维码", "包装设计", "物流测算", "前端 Web 应用"]
       }
     </script>
 
@@ -250,6 +341,8 @@
           Code、EAN-13、DataMatrix、PDF417 等 42 种条码与二维码，可自定义任意毫米尺寸纸张，支持导入
           Excel 批量套打，导出矢量 PDF 与 384 DPI 高清 PNG。
         </p>
+
+        <h2>能做什么</h2>
         <ul>
           <li>42 种条码与二维码：一维码、二维码、GS1-128、2/5 家族全覆盖</li>
           <li>任意纸张尺寸：快递面单、仓储货架标签、产品铭牌、资产标签</li>
@@ -259,6 +352,51 @@
           <li>多纸与页序控制：一份模板管理多张标签，支持按套或按标签排序输出</li>
           <li>完全本地运行：数据不上传服务器，可离线使用</li>
         </ul>
+
+        <h2>支持哪些条码与二维码</h2>
+        <h3>一维码（13 种）</h3>
+        <p>
+          Code128、GS1-128、Code39、Code93、Code11、Codabar、EAN-13、EAN-8、UPC-A、UPC-E、ITF-14、
+          MSI Plessey、Pharmacode，另含 2/5 家族（Industrial / Interleaved / Matrix / Datalogic）。
+        </p>
+        <h3>二维码与堆叠码（29 种）</h3>
+        <p>
+          QR Code、Micro QR、DataMatrix、PDF417、Aztec、MaxiCode、DotCode、汉信码（HanXin）、Swiss
+          QR 等，适合追溯链接、批次号、小面积高密度编码等场景。
+        </p>
+        <p>
+          码制细节可对照 <a href="https://www.gs1.org/standards/barcodes">GS1 条码标准</a>、
+          <a href="https://www.iso.org/standard/62021.html">ISO/IEC 15417（Code 128）</a> 与
+          <a href="https://www.ancc.org.cn/">中国物品编码中心</a> 的公开资料。
+        </p>
+
+        <h2>批量套打与导出</h2>
+        <h3>Excel 数据绑定</h3>
+        <p>
+          把文本框命名为表头名（如“型号”“批次号”），导入表格后每一行数据自动替换整框内容；也可以在句子里写
+          <code>{{列名}}</code> 做行内混排，或用序列化生成递增流水号。
+        </p>
+        <h3>矢量 PDF 与 384 DPI PNG</h3>
+        <p>
+          PDF 为矢量绘制，文字可选中、可搜索，放大到任意倍率都不失真，可直接送印刷厂或标签打印机；
+          PNG 按倍率矢量重绘，默认约 384 DPI，满足条码扫描枪识读要求。
+        </p>
+
+        <h2>数据与隐私</h2>
+        <p>
+          排版、条码生成、表格解析与导出渲染全部在浏览器本地完成，设计与表格文件不会上传到任何服务器，断网也能继续使用。
+        </p>
+
+        <h2>关于本站</h2>
+        <p>
+          标签编辑器是「包装&amp;物流工具箱」中的一款工具，由独立开发者星辰月光酿大树维护，同站还有纸盒刀模设计、集装箱装柜计算与
+          Markdown 编辑器。本页最后更新：<time datetime="2026-10-29">2026 年 10 月 29 日</time>。
+        </p>
+        <p>
+          问题反馈与需求建议：<a href="mailto:312655375@qq.com">312655375@qq.com</a>，更多背景见
+          <a href="https://057300.xyz/about/">关于作者与本站</a>。
+        </p>
+
         <p class="seo-links">
           <a href="/guide/">使用指南</a> ·
           <a href="/guide/barcode-types.html">42 种码制怎么选</a> ·
