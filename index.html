@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+
+    <title>标签编辑器 - 在线条码标签设计与打印 | PDF/PNG 导出</title>
+    <meta
+      name="description"
+      content="免费在线标签编辑器，无需注册。拖拽即可设计条码标签，支持 Code128、QR Code、EAN-13、DataMatrix 等 42 种条码与二维码，可自定义任意毫米尺寸纸张、导入 Excel 批量套打，导出矢量 PDF 与 384 DPI 高清 PNG，数据全部保存在本地浏览器。"
+    />
+    <meta
+      name="keywords"
+      content="标签编辑器,在线标签制作,条码标签,标签打印软件,二维码标签,Code128,快递面单打印,仓储货架标签,物流标签模板,产品标签设计,批量套打,免费标签工具"
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="googlebot" content="index, follow" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="canonical" href="https://057300.xyz/label-editor/" />
+
+    <!-- GEO / AI 发现信号：语言标记、作者、内容更新时间、站点级 Atom（根站） -->
+    <meta name="author" content="星辰月光酿大树" />
+    <link rel="alternate" hreflang="zh-CN" href="https://057300.xyz/label-editor/" />
+    <link rel="alternate" hreflang="x-default" href="https://057300.xyz/label-editor/" />
+    <link
+      rel="alternate"
+      type="application/atom+xml"
+      title="包装&amp;物流工具箱 · 最新内容"
+      href="https://057300.xyz/atom.xml"
+    />
+    <meta property="article:modified_time" content="2026-10-29T00:00:00+08:00" />
+
+    <!-- 站点图标 -->
+    <link rel="icon" href="./favicon.ico" sizes="32x32" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.json" />
+
+    <!-- Open Graph / 微信、QQ、钉钉等分享卡片 -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="标签编辑器" />
+    <meta property="og:url" content="https://057300.xyz/label-editor/" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="标签编辑器 - 在线条码标签设计与打印" />
+    <meta
+      property="og:description"
+      content="免费在线条码标签设计工具：42 种条码二维码、任意纸张尺寸、Excel 批量套打，导出矢量 PDF 与高清 PNG，无需注册，数据不出本地。"
+    />
+    <meta property="og:image" content="https://057300.xyz/label-editor/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="标签编辑器：白底标签卡片内含 Code128 条码与文字排版" />
+
+    <!-- Twitter / X -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="标签编辑器 - 在线条码标签设计与打印" />
+    <meta
+      name="twitter:description"
+      content="免费在线条码标签设计工具：42 种条码二维码、任意纸张尺寸、Excel 批量套打，导出矢量 PDF 与高清 PNG。"
+    />
+    <meta name="twitter:image" content="https://057300.xyz/label-editor/og-image.png" />
+
+    <!-- 首屏静态内容样式（React 挂载后该块会被替换） -->
+    <style>
+      /* 自带底色，不依赖 body —— 避免深色模式下浅色字落在白底上不可读 */
+      #seo-intro {
+        box-sizing: border-box;
+        margin: 0;
+        /* 全宽底色 + 内容限宽 720px 居中 */
+        padding: 48px max(24px, calc(50% - 360px)) 72px;
+        min-height: 100vh;
+        background: #ffffff;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+          'Microsoft YaHei', sans-serif;
+        line-height: 1.75;
+        color: #0f172a;
+      }
+      #seo-intro h1 {
+        margin: 0 0 16px;
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      #seo-intro h2 {
+        margin: 28px 0 10px;
+        font-size: 18px;
+        font-weight: 700;
+      }
+      #seo-intro h3 {
+        margin: 18px 0 6px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #1e293b;
+      }
+      #seo-intro time {
+        font-variant-numeric: tabular-nums;
+      }
+      #seo-intro p {
+        margin: 0 0 20px;
+        font-size: 15px;
+        color: #334155;
+      }
+      #seo-intro ul {
+        margin: 0 0 24px;
+        padding: 0;
+        list-style: none;
+      }
+      #seo-intro li {
+        position: relative;
+        margin: 0 0 10px;
+        padding-left: 20px;
+        font-size: 14px;
+        color: #475569;
+      }
+      #seo-intro li::before {
+        content: '';
+        position: absolute;
+        left: 2px;
+        top: 10px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #2563eb;
+      }
+      #seo-intro .seo-links {
+        margin: 0 0 24px;
+        font-size: 14px;
+      }
+      #seo-intro a {
+        color: #2563eb;
+        text-decoration: none;
+      }
+      #seo-intro a:hover {
+        text-decoration: underline;
+      }
+      #seo-intro .seo-loading {
+        margin: 0;
+        font-size: 13px;
+        color: #94a3b8;
+        animation: seo-pulse 1.5s ease-in-out infinite;
+      }
+      @keyframes seo-pulse {
+        0%,
+        100% {
+          opacity: 0.35;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-color-scheme: dark) {
+        #seo-intro {
+          background: #0b1220;
+          color: #e2e8f0;
+        }
+        #seo-intro p {
+          color: #cbd5e1;
+        }
+        #seo-intro li {
+          color: #94a3b8;
+        }
+        #seo-intro a {
+          color: #60a5fa;
+        }
+      }
+    </style>
+
+    <!-- 结构化数据：WebApplication -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "@id": "https://057300.xyz/label-editor/#app",
+        "name": "标签编辑器",
+        "alternateName": "Label Editor",
+        "url": "https://057300.xyz/label-editor/",
+        "description": "免费在线标签编辑器，无需注册。拖拽即可设计条码标签，支持 Code128、QR Code、EAN-13、DataMatrix、PDF417 等 42 种条码与二维码，可自定义任意毫米尺寸纸张，导入 Excel 批量套打，导出矢量 PDF 与 384 DPI 高清 PNG，数据全部保存在本地浏览器。",
+        "applicationCategory": "BusinessApplication",
+        "applicationSubCategory": "标签设计与打印",
+        "operatingSystem": "Web Browser",
+        "browserRequirements": "需要支持 canvas 的现代浏览器（Chrome / Edge / Safari / Firefox）",
+        "inLanguage": "zh-CN",
+        "isAccessibleForFree": true,
+        "datePublished": "2026-09-12T00:00:00+08:00",
+        "dateModified": "2026-10-29T00:00:00+08:00",
+        "author": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "包装&物流工具箱",
+          "url": "https://057300.xyz/"
+        },
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "CNY" },
+        "featureList": [
+          "42 种条码与二维码（Code128 / QR Code / EAN-13 / DataMatrix / PDF417 等）",
+          "自定义任意毫米尺寸纸张，支持多张不同尺寸标签",
+          "Excel / CSV 批量导入与按行套打",
+          "矢量 PDF 导出，文字与条码无损缩放",
+          "384 DPI 高清 PNG 导出",
+          "全程本地运行，数据不上传"
+        ]
+      }
+    </script>
+
+    <!-- 结构化数据：WebSite（站点实体，供 AI 判断页面属于哪个站点） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "@id": "https://057300.xyz/label-editor/#website",
+        "name": "标签编辑器",
+        "alternateName": "Label Editor · 在线条码标签设计与打印",
+        "url": "https://057300.xyz/label-editor/",
+        "description": "在线条码标签设计与打印工具，支持 42 种条码二维码、任意毫米纸张、Excel 批量套打，导出矢量 PDF 与高清 PNG。",
+        "inLanguage": "zh-CN",
+        "publisher": { "@id": "https://057300.xyz/label-editor/#publisher" }
+      }
+    </script>
+
+    <!-- 结构化数据：Organization（发布方实体 + 联系方式 + 服务范围） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "OnlineBusiness",
+        "@id": "https://057300.xyz/label-editor/#publisher",
+        "name": "包装&物流工具箱",
+        "alternateName": "Packaging & Logistics Toolbox",
+        "url": "https://057300.xyz/",
+        "description": "免费在线的包装设计与物流测算工具集：纸盒刀模设计、集装箱装柜计算、条码标签设计、Markdown 编辑，全部在浏览器内运行。",
+        "email": "312655375@qq.com",
+        "areaServed": "Worldwide",
+        "knowsLanguage": ["zh-CN", "en"],
+        "founder": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        }
+      }
+    </script>
+
+    <!-- 结构化数据：作者实体（Google 要求“谁写的”，AI 引用时用来判断可信度） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Person",
+        "@id": "https://057300.xyz/#author",
+        "name": "星辰月光酿大树",
+        "jobTitle": "独立开发者",
+        "url": "https://057300.xyz/about/",
+        "email": "312655375@qq.com",
+        "knowsAbout": ["标签设计", "条码与二维码", "包装设计", "物流测算", "前端 Web 应用"]
+      }
+    </script>
+
+    <!-- 结构化数据：FAQ -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "标签编辑器支持哪些条码和二维码类型？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "共支持 42 种码制。一维码包含 Code128、GS1-128、Code39、Code93、Code11、Codabar、EAN-13、EAN-8、UPC-A、UPC-E、ITF-14、MSI Plessey、Pharmacode 以及 2/5 家族；二维码包含 QR Code、Micro QR、DataMatrix、PDF417、Aztec、MaxiCode、DotCode、汉信码（HanXin）、Swiss QR 等。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "可以自定义标签纸张尺寸吗？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "可以。纸张尺寸以毫米为单位自由设定，不受固定规格限制，适用于快递面单、仓储货架标签、产品铭牌、资产标签、价签等场景。同一份文件还可以添加多张不同尺寸的纸，分别放置不同排版的标签。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "如何批量生成几十上百张不同内容的标签？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "导入 Excel 或 CSV 表格后，把文本框的名称改成与表头一致（例如命名为“型号”“批次号”），系统会自动将整框内容替换为当前行的对应数据，无需手写占位符。随后选择打印行数即可按行批量输出。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "导出的 PDF 和 PNG 清晰度如何？适合印刷吗？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "PDF 为矢量导出，文字、条码与图形均以矢量绘制，放大到任意倍率都不会模糊，可直接送印刷厂或标签打印机。PNG 采用矢量按倍率重绘，默认输出约 384 DPI，满足常规印刷与条码扫描枪识读要求。"
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "需要注册或付费吗？我的数据会上传到服务器吗？",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "完全免费，无需注册登录。所有排版、条码生成、表格解析和导出渲染都在浏览器本地完成，文件不会上传到任何服务器，断网状态下也能继续使用。"
+            }
+          }
+        ]
+      }
+    </script>
+    <!-- 百度统计：全站流量统计（SPA 主文档，全站唯一入口，路由切换不重新加载页面也不影响 PV 统计） -->
+    <script>
+      var _hmt = _hmt || [];
+      (function () {
+        var hm = document.createElement("script");
+        hm.src = "https://hm.baidu.com/hm.js?87c8e0d5bc10316e4785ef9f6300beeb";
+        var s = document.getElementsByTagName("script")[0];
+        s.parentNode.insertBefore(hm, s);
+      })();
+    </script>
+    <!-- Google AdSense：Google 广告（全站页面 head 内） -->
+    <script
+      async
+      src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1124987147181210"
+      crossorigin="anonymous"
+    ></script>
+  <script type="module" crossorigin src="./assets/index-C4MIZqKd.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/vendor-fabric-l-WhIiln.js">
+  <link rel="modulepreload" crossorigin href="./assets/vendor-pdf-DqTwRx9C.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-dxecKhbN.css">
+</head>
+  <body>
+    <div id="root">
+      <!--
+        静态首屏内容：React 挂载后会接管 #root 并替换本块。
+        作用一：SEO —— 让搜索引擎抓取到页面真实主题，而不是一个空 div。
+        作用二：体验 —— 主包加载期间不再白屏，用户能立刻读到这是做什么的。
+      -->
+      <div id="seo-intro">
+        <h1>标签编辑器 · 在线条码标签设计与打印</h1>
+        <p>
+          免费在线标签编辑器，无需安装、无需注册。拖拽即可完成条码标签排版，支持 Code128、QR
+          Code、EAN-13、DataMatrix、PDF417 等 42 种条码与二维码，可自定义任意毫米尺寸纸张，支持导入
+          Excel 批量套打，导出矢量 PDF 与 384 DPI 高清 PNG。
+        </p>
+
+        <h2>能做什么</h2>
+        <ul>
+          <li>42 种条码与二维码：一维码、二维码、GS1-128、2/5 家族全覆盖</li>
+          <li>任意纸张尺寸：快递面单、仓储货架标签、产品铭牌、资产标签</li>
+          <li>Excel / CSV 批量套打：文本框名称与表头一致即自动绑定整列数据</li>
+          <li>矢量 PDF 导出：文字与条码均为矢量，放大多大都不糊</li>
+          <li>高清 PNG 导出：384 DPI 矢量重绘，印刷级清晰度</li>
+          <li>多纸与页序控制：一份模板管理多张标签，支持按套或按标签排序输出</li>
+          <li>完全本地运行：数据不上传服务器，可离线使用</li>
+        </ul>
+
+        <h2>支持哪些条码与二维码</h2>
+        <h3>一维码（13 种）</h3>
+        <p>
+          Code128、GS1-128、Code39、Code93、Code11、Codabar、EAN-13、EAN-8、UPC-A、UPC-E、ITF-14、
+          MSI Plessey、Pharmacode，另含 2/5 家族（Industrial / Interleaved / Matrix / Datalogic）。
+        </p>
+        <h3>二维码与堆叠码（29 种）</h3>
+        <p>
+          QR Code、Micro QR、DataMatrix、PDF417、Aztec、MaxiCode、DotCode、汉信码（HanXin）、Swiss
+          QR 等，适合追溯链接、批次号、小面积高密度编码等场景。
+        </p>
+        <p>
+          码制细节可对照 <a href="https://www.gs1.org/standards/barcodes">GS1 条码标准</a>、
+          <a href="https://www.iso.org/standard/62021.html">ISO/IEC 15417（Code 128）</a> 与
+          <a href="https://www.ancc.org.cn/">中国物品编码中心</a> 的公开资料。
+        </p>
+
+        <h2>批量套打与导出</h2>
+        <h3>Excel 数据绑定</h3>
+        <p>
+          把文本框命名为表头名（如“型号”“批次号”），导入表格后每一行数据自动替换整框内容；也可以在句子里写
+          <code>{{列名}}</code> 做行内混排，或用序列化生成递增流水号。
+        </p>
+        <h3>矢量 PDF 与 384 DPI PNG</h3>
+        <p>
+          PDF 为矢量绘制，文字可选中、可搜索，放大到任意倍率都不失真，可直接送印刷厂或标签打印机；
+          PNG 按倍率矢量重绘，默认约 384 DPI，满足条码扫描枪识读要求。
+        </p>
+
+        <h2>数据与隐私</h2>
+        <p>
+          排版、条码生成、表格解析与导出渲染全部在浏览器本地完成，设计与表格文件不会上传到任何服务器，断网也能继续使用。
+        </p>
+
+        <h2>关于本站</h2>
+        <p>
+          标签编辑器是「包装&amp;物流工具箱」中的一款工具，由独立开发者星辰月光酿大树维护，同站还有纸盒刀模设计、集装箱装柜计算与
+          Markdown 编辑器。本页最后更新：<time datetime="2026-10-29">2026 年 10 月 29 日</time>。
+        </p>
+        <p>
+          问题反馈与需求建议：<a href="mailto:312655375@qq.com">312655375@qq.com</a>，更多背景见
+          <a href="https://057300.xyz/about/">关于作者与本站</a>。
+        </p>
+
+        <p class="seo-links">
+          <a href="./guide/">使用指南</a> ·
+          <a href="./guide/barcode-types.html">42 种码制怎么选</a> ·
+          <a href="./guide/label-sizes.html">标签尺寸速查</a> ·
+          <a href="./guide/batch-print.html">Excel 批量套打</a>
+        </p>
+        <p class="seo-loading">正在加载编辑器… 若长时间停留在此页面，请刷新重试</p>
+      </div>
+    </div>
+    <noscript>
+      <div id="seo-intro">
+        <h1>标签编辑器 · 在线条码标签设计与打印</h1>
+        <p>
+          本工具需要启用 JavaScript 才能运行。请在浏览器设置中开启 JavaScript 后刷新页面。启用后即可使用
+          Code128、QR Code 等 42 种条码二维码排版，导出矢量 PDF 与高清 PNG。
+        </p>
+      </div>
+    </noscript>
+  </body>
+</html>
