@@ -110,6 +110,43 @@
         ]
       }
     </script>
+    <!-- 结构化数据：发布方实体 + 站点实体（供 AI 判断页面出处） -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "OnlineBusiness",
+        "@id": "https://057300.xyz/#publisher",
+        "name": "包装&物流工具箱",
+        "alternateName": "Packaging & Logistics Toolbox",
+        "url": "https://057300.xyz/",
+        "email": "312655375@qq.com",
+        "areaServed": "Worldwide",
+        "knowsLanguage": [
+          "zh-CN",
+          "en"
+        ],
+        "founder": {
+          "@type": "Person",
+          "name": "星辰月光酿大树",
+          "jobTitle": "独立开发者",
+          "url": "https://057300.xyz/about/"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "@id": "https://057300.xyz/label-editor/#website",
+        "name": "标签编辑器",
+        "alternateName": "Label Editor",
+        "url": "https://057300.xyz/label-editor/",
+        "inLanguage": "zh-CN",
+        "publisher": {
+          "@id": "https://057300.xyz/#publisher"
+        }
+      }
+    </script>
 </head>
   <body>
     <header class="gh">
