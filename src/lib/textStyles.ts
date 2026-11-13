@@ -28,7 +28,53 @@ export const FONT_FAMILIES: { value: string; label: string }[] = [
   { value: 'Helvetica', label: 'Helvetica' },
   { value: 'Times New Roman', label: 'Times New Roman' },
   { value: 'Courier New', label: 'Courier New' },
+  { value: 'LE Narrow', label: '窄体（Arial Narrow）' },
+  { value: 'LE Black', label: '超粗（Arial Black）' },
   { value: 'SimHei', label: '黑体' },
+]
+
+/**
+ * 需要「画布加载 + 导出内嵌」的字体（SIL OFL 1.1，可商用、可随站点分发）。
+ *
+ * ⚠️ 为什么窄体/超粗必须内嵌、不能在清单里只加个名字：
+ *    jsPDF 的内置字库只有 Helvetica / Times / Courier，没有窄体也没有超粗；
+ *    只加名字会让 PDF 回退到 Helvetica —— Arial Narrow 实测窄 18%，
+ *    排好的标签会整体溢出、断行全变。所以这两款走**同一份 TTF**：
+ *    画布用 FontFace API 加载（webFonts.ts），PDF 内嵌它的子集（vectorExport.ts），
+ *    两侧字形与字宽严格一致。
+ *
+ * 族名特意用自定义名（`LE Narrow`）而不是直接叫 `Arial Narrow`：
+ *    ① 不会盖掉用户系统里真实的 Arial Narrow；
+ *    ② 不依赖系统是否装了这款字体 —— Mac / 手机 / Linux 上画布显示完全一样。
+ */
+export interface EmbeddedFontVariant {
+  weight: '400' | '700'
+  file: string
+}
+export interface EmbeddedFontDef {
+  /** 画布（fabric fontFamily）与 CSS 共用的字体族名 */
+  family: string
+  label: string
+  variants: EmbeddedFontVariant[]
+}
+
+export const EMBEDDED_FONTS: EmbeddedFontDef[] = [
+  {
+    family: 'LE Narrow',
+    label: '窄体',
+    // 真 Regular + 真 Bold 两个文件：粗体是字形本身变粗、不是描边模拟，
+    // 所以画布与 PDF 的粗体效果完全一致。
+    variants: [
+      { weight: '400', file: 'PT-Sans-Narrow-Regular.ttf' },
+      { weight: '700', file: 'PT-Sans-Narrow-Bold.ttf' },
+    ],
+  },
+  {
+    family: 'LE Black',
+    label: '超粗',
+    // Archivo Black 本身已是该字族最重字重，再开粗体只会糊，故不提供 bold 变体
+    variants: [{ weight: '400', file: 'Archivo-Black-Regular.ttf' }],
+  },
 ]
 
 /** 唯一带中文字形的可导出字体（内嵌 simhei）：含中文的文本只有它能做到「所见即所得」 */
@@ -69,7 +115,11 @@ const LEGACY_FONT_MAP: Record<string, string> = {
   impact: DEFAULT_FONT,
   'ms sans serif': DEFAULT_FONT,
   'microsoft sans serif': DEFAULT_FONT,
-  'arial narrow': DEFAULT_FONT,
+  // 这两款现在有真正内嵌的等价字体了：老标签里存的名字直接映射过去，
+  // 而不是像以前那样退化成普通 Arial（会丢掉"窄"和"超粗"的排版意图）。
+  'arial narrow': 'LE Narrow',
+  'helvetica narrow': 'LE Narrow',
+  'arial black': 'LE Black',
   'segoe ui': DEFAULT_FONT,
   calibri: DEFAULT_FONT,
   'comic sans ms': DEFAULT_FONT,

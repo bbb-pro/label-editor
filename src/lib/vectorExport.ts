@@ -14,6 +14,7 @@ import type { PaperOrder, PaperSize, DataRow } from '@/types/template'
 import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
 import { pxToPt, canUseBuiltinFont } from '@/lib/textStyles'
+import { fontFileUrl } from '@/lib/webFonts'
 import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import {
@@ -27,8 +28,46 @@ import type { fabric } from 'fabric'
 // 引入后会给 jsPDF 原型挂上 .svg()，用于把完整 SVG 绘制为矢量路径
 import 'svg2pdf.js'
 
+/** 中文 / WinAnsi 表示不了的符号 → 统一内嵌黑体（唯一带中日韩与 ℃±≤ 等字形的资源） */
 const FONT_ALIAS = 'SimHeiPDF'
-const FONT_URL = () => `${import.meta.env.BASE_URL}fonts/simhei.ttf`
+
+/**
+ * 内嵌字体注册表：jsPDF 字体名（alias）→ 字体文件。
+ *
+ * 每个 alias 都会被「按本页用到的字符子集化」后 addFileToVFS + addFont 注册进 PDF，
+ * 所以这里的 key 与 `EMBEDDED_FAMILY_TO_PDF` 的映射必须一一对应。
+ * ⚠️ 子集化后每个字体只几 KB，真正决定 PDF 体积的是「页面上实际用到的字符数」。
+ */
+interface EmbedFontDef {
+  /** public/fonts/ 下的文件名 */
+  file: string
+  /** 日志 / 提示里用的中文名 */
+  label: string
+  /** 该 alias 本身是否已是粗体字形（是的话不再叠加 PDF 描边加粗） */
+  bold?: boolean
+}
+const EMBED_FONTS: Record<string, EmbedFontDef> = {
+  [FONT_ALIAS]: { file: 'simhei.ttf', label: '黑体' },
+  LENarrowPDF: { file: 'PT-Sans-Narrow-Regular.ttf', label: '窄体' },
+  LENarrowBoldPDF: { file: 'PT-Sans-Narrow-Bold.ttf', label: '窄体粗体', bold: true },
+  LEBlackPDF: { file: 'Archivo-Black-Regular.ttf', label: '超粗' },
+}
+
+/**
+ * 画布字体族（小写）→ 内嵌 alias。
+ * 与 textStyles.ts 的 `EMBEDDED_FONTS`（族名 + 文件）成对维护：那边管"画布加载什么"，
+ * 这边管"PDF 内嵌什么"，两边指向同一份 TTF 才谈得上「所见即所得」。
+ */
+const EMBEDDED_FAMILY_TO_PDF: Record<string, { normal: string; bold?: string }> = {
+  'le narrow': { normal: 'LENarrowPDF', bold: 'LENarrowBoldPDF' },
+  'le black': { normal: 'LEBlackPDF' },
+}
+
+/** 对象是否粗体（fabric 里可能是 'bold' 字符串，也可能是 600+ 的数值） */
+function isBoldObj(o: fabric.Object): boolean {
+  const w = (o as { fontWeight?: string | number }).fontWeight
+  return w === 'bold' || (typeof w === 'number' && w >= 600)
+}
 
 /**
  * 画布字体 → PDF 字体映射。
@@ -108,14 +147,22 @@ const FABRIC_ASCENT_MULT = FABRIC_LINE_MULT * (1 - FABRIC_FONT_SIZE_FRACTION)
  *    而"未知字体 + 纯拉丁"按无衬线兜底 —— 拿黑体去画拉丁文字，字宽与字形都差得远。
  * 判据函数 canUseBuiltinFont 与属性面板提示共用（见 lib/textStyles.ts）。
  */
-function pdfFontFor(obj: fabric.Object, content: string): string {
+function pdfFontFor(obj: fabric.Object, content: string, forceBold?: boolean): string {
   const fam = String((obj as { fontFamily?: string }).fontFamily ?? '').toLowerCase().trim()
   if (!canUseBuiltinFont(content)) return FONT_ALIAS
-  // 字体族列表（"Arial, SimHei"）取第一个能识别的
+  // 字体族列表（"Arial, SimHei"）取第一个能识别的（内置字体与内嵌字体都算"能识别"）
   const key = fam.includes(',')
-    ? (fam.split(',').map((s) => s.trim()).find((s) => CANVAS_TO_PDF_FONT[s]) ?? fam)
+    ? (fam.split(',').map((s) => s.trim()).find((s) => CANVAS_TO_PDF_FONT[s] || EMBEDDED_FAMILY_TO_PDF[s]) ?? fam)
     : fam
-  return CANVAS_TO_PDF_FONT[key] ?? PDF_FONT_LATIN.helvetica
+  const builtin = CANVAS_TO_PDF_FONT[key]
+  if (builtin) return builtin
+  // 内嵌字体（窄体/超粗）：按粗体选真粗体文件，没有粗体变体就退回常规
+  const emb = EMBEDDED_FAMILY_TO_PDF[key]
+  if (emb) {
+    const bold = forceBold ?? isBoldObj(obj)
+    return bold && emb.bold ? emb.bold : emb.normal
+  }
+  return PDF_FONT_LATIN.helvetica
 }
 
 /** 条码组里的「人读文字」child（只有一维码有） */
@@ -206,31 +253,37 @@ function parseColor(color: string | null | undefined): [number, number, number] 
   return null
 }
 
-/* ── 中文字体子集化 + 内嵌 ─────────────────────────── */
+/* ── 字体子集化 + 内嵌（黑体 / 窄体 / 超粗） ─────────────── */
 
-/** TTF 原始字节的内存缓存：避免每次导出都重新 fetch 字体文件 */
-let _ttfCache: ArrayBuffer | null = null
-async function loadTtf(): Promise<ArrayBuffer> {
-  if (_ttfCache) return _ttfCache
-  const resp = await fetch(FONT_URL())
-  if (!resp.ok) throw new Error(`字体加载失败 HTTP ${resp.status}`)
-  _ttfCache = await resp.arrayBuffer()
-  return _ttfCache
+/** TTF 原始字节的内存缓存（按 alias）：避免每次导出都重新 fetch 字体文件 */
+const _ttfCache = new Map<string, ArrayBuffer>()
+async function loadTtf(alias: string): Promise<ArrayBuffer> {
+  const hit = _ttfCache.get(alias)
+  if (hit) return hit
+  const def = EMBED_FONTS[alias]
+  if (!def) throw new Error(`未注册的内嵌字体：${alias}`)
+  const resp = await fetch(fontFileUrl(def.file))
+  if (!resp.ok) throw new Error(`${def.label}字体加载失败 HTTP ${resp.status}`)
+  const buf = await resp.arrayBuffer()
+  _ttfCache.set(alias, buf)
+  return buf
 }
 
 /**
  * 传入需要包含的字符数组，生成可嵌入 jsPDF 的子集字体。
- * 任何一步失败（网络 / 字体内不含目标字形 / 子集化异常）都返回 null，
- * 由调用方降级为内置 Helvetica —— 保证图表/形状/条码等非文本内容仍能导出，
- * 而不是整份 PDF 直接失败。
+ * 任何一步失败（网络 / 字体损坏 / 子集化异常）都返回 null，由调用方降级 ——
+ * 保证图表/形状/条码等非文本内容仍能导出，而不是整份 PDF 直接失败。
  */
-async function subsetFont(chars: Iterable<number>): Promise<{ embed: (doc: jsPDF) => void } | null> {
+async function subsetFont(
+  alias: string,
+  chars: Iterable<number>,
+): Promise<{ embed: (doc: jsPDF) => void } | null> {
   try {
     const cps = new Set<number>(chars)
     // 始终补全 ASCII 与常见标点，避免某些运行依赖
     for (let c = 0x20; c <= 0x7e; c++) cps.add(c)
     for (const ch of '，。、；：？！（）【】“”‘’·—…％‰＋－＝≤≥×÷㎡℃~№') cps.add(ch.codePointAt(0)!)
-    const buf = await loadTtf()
+    const buf = await loadTtf(alias)
     const font = Font.create(buf, { type: 'ttf', subset: [...cps], compound2simple: true })
     const out = font.write({ type: 'ttf' })
     const u8: Uint8Array = out instanceof Uint8Array ? out : new Uint8Array(out as ArrayBuffer)
@@ -240,12 +293,17 @@ async function subsetFont(chars: Iterable<number>): Promise<{ embed: (doc: jsPDF
     const b64 = btoa(bin)
     return {
       embed(doc: jsPDF) {
-        doc.addFileToVFS(`${FONT_ALIAS}.ttf`, b64)
-        doc.addFont(`${FONT_ALIAS}.ttf`, FONT_ALIAS, 'normal')
+        doc.addFileToVFS(`${alias}.ttf`, b64)
+        // 第三参数恒为 'normal'：alias 本身是一份独立字体文件，
+        // 粗体版本是另一个 alias（如 LENarrowBoldPDF），不是同字体的 style 变体。
+        doc.addFont(`${alias}.ttf`, alias, 'normal')
       },
     }
   } catch (err) {
-    console.warn('[vectorExport] 中文字体子集化失败，降级为 Helvetica（中文可能显示为方框）', err)
+    console.warn(
+      `[vectorExport] 字体子集化失败（${EMBED_FONTS[alias]?.label ?? alias}），该字体将降级`,
+      err,
+    )
     return null
   }
 }
@@ -407,7 +465,13 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   // 字体：拉丁字体走 jsPDF 内置字体（字面与画布一致，如 Arial→Helvetica），
   // 中文/未知字体走内嵌子集。粗体用内置字体时可交给 PDF 用真实 bold 字重。
   const pdfFont = pdfFontFor(it as unknown as fabric.Object, content)
-  const useBuiltinBold = pdfFont !== FONT_ALIAS && isBold
+  // 粗体分三种情况，别混：
+  //   ① 内置字体（Helvetica/Times/Courier）→ 有真 bold 字重，交给 PDF 直接排；
+  //   ② 内嵌字体但 alias 本身就是粗体文件（LENarrowBoldPDF）→ 已是粗字形，不要再加粗；
+  //   ③ 内嵌字体且没有粗体变体（黑体 / 超粗）→ 用 PDF 原生「填充+描边」近似加粗。
+  const isEmbeddedFont = !!EMBED_FONTS[pdfFont]
+  const aliasIsBold = !!EMBED_FONTS[pdfFont]?.bold
+  const useBuiltinBold = !isEmbeddedFont && isBold
   doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
   doc.setFontSize(fontSizePt)
   // 字间距：fabric 的 charSpacing 与 PDF 的 Tc 同为「千分之一 em」，
@@ -487,7 +551,7 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
     //    一起（实测「蓝莓果汁」被画 2 次、两次 x 相差 0.89mm，肉眼看到的就是「文字重叠」）。
     //    改用 PDF 原生的「填充 + 描边」渲染模式一次成稿：字形沿轮廓均匀外扩，是真正的加粗，
     //    只有一份字形数据。描边宽度取 0.05em（≈ 每边加粗 2.5% 字号）。
-    if (isBold && !useBuiltinBold) {
+    if (isBold && !useBuiltinBold && !aliasIsBold) {
       doc.setDrawColor(rgb[0], rgb[1], rgb[2])
       doc.setLineWidth(fontSizePt * MM_PER_PT * 0.05)
       textOpts.renderingMode = 'fillThenStroke'
@@ -960,8 +1024,11 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
       const text = rows[r][c]
       if (!text) continue
       const isBoldCell = !!spec.bold || (headerRow && r === 0)
-      const pdfFont = pdfFontFor(sample ?? o, text)
-      const useBuiltinBold = pdfFont !== FONT_ALIAS && isBoldCell
+      // 表格的粗体是「整表/表头」决定的，sample 单元格对象上读不到，故显式传入
+      const pdfFont = pdfFontFor(sample ?? o, text, isBoldCell)
+      const isEmbeddedFont = !!EMBED_FONTS[pdfFont]
+      const aliasIsBold = !!EMBED_FONTS[pdfFont]?.bold
+      const useBuiltinBold = !isEmbeddedFont && isBoldCell
       doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
       doc.setFontSize(fontSizePt)
       doc.setTextColor(0, 0, 0)
@@ -985,7 +1052,7 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
         }
         // 粗体：与 drawTextObject 同一套 —— 内置字体用真实 bold 字重，
         // 内嵌黑体没有 bold 版，用 PDF 原生「填充+描边」一次成稿（绝不重复绘制两遍）。
-        if (isBoldCell && !useBuiltinBold) {
+        if (isBoldCell && !useBuiltinBold && !aliasIsBold) {
           doc.setDrawColor(0, 0, 0)
           doc.setLineWidth(fontSizePt * MM_PER_PT * 0.05)
           opts.renderingMode = 'fillThenStroke'
@@ -1048,12 +1115,25 @@ async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
 /* ── 收集一页所有文本字符 ──────────────────────────── */
 
 /**
- * 收集一页中「需要内嵌子集字体」的字符。
- * 只有会用 FONT_ALIAS 渲染的文本才需要内嵌——拉丁字体且内容纯拉丁的对象
- * 走 jsPDF 内置字体（无需内嵌），把它们排除可显著减小 PDF 体积。
+ * 收集一页中「需要内嵌子集字体」的字符，**按字体 alias 分组**。
+ * 只有会走内嵌字体的文本才收集 —— 拉丁文本走 jsPDF 内置字体（无需内嵌），
+ * 排除掉能显著减小 PDF 体积。
+ *
+ * ⚠️ 表格的粗体由 spec.bold / 表头决定，故每个单元格把「常规 + 粗体」两个 alias
+ *    都登记一遍：宁可多嵌一个几百字节的子集，也不要出现「绘制时用了粗体 alias、
+ *    但字符没进那份子集」导致单元格印成空白。
  */
-function pageChars(ctrl: CanvasController): string {
-  const parts: string[] = []
+function pageChars(ctrl: CanvasController): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>()
+  const add = (alias: string, text: string) => {
+    if (!EMBED_FONTS[alias]) return
+    let set = out.get(alias)
+    if (!set) {
+      set = new Set<number>()
+      out.set(alias, set)
+    }
+    for (const ch of text) set.add(ch.codePointAt(0)!)
+  }
   for (const o of flattenLeaves(ctrl)) {
     const kind = (o as unknown as { kind?: string }).kind
     // 表格的文字在 _table 里（组内子对象不参与导出），必须单独收进来，
@@ -1064,7 +1144,9 @@ function pageChars(ctrl: CanvasController): string {
       const sample = hrtTextChild(o) ?? o
       for (const row of normalizeRows(spec.rows)) {
         for (const t of row) {
-          if (t && pdfFontFor(sample, t) === FONT_ALIAS) parts.push(t)
+          if (!t) continue
+          add(pdfFontFor(sample, t, false), t)
+          add(pdfFontFor(sample, t, true), t)
         }
       }
       continue
@@ -1072,9 +1154,9 @@ function pageChars(ctrl: CanvasController): string {
     if (kind !== 'text' && kind !== 'barcode') continue
     const content = ctrl.contentStringFor(o)
     if (!content) continue
-    if (leafFontFor(o, content) === FONT_ALIAS) parts.push(content)
+    add(leafFontFor(o, content), content)
   }
-  return parts.join('\n')
+  return out
 }
 
 /* ── 主入口 ────────────────────────────────────────── */
@@ -1123,11 +1205,18 @@ export async function buildVectorPdf(
     else if (serialActive) controller.setSeqIndex(index)
   }
 
-  // 收集全部页文本 → 一次性子集字体
-  const textPool: string[] = []
+  // 收集全部页文本 → 按字体分组，各做一次子集
+  const charMap = new Map<string, Set<number>>()
   for (let p = 0; p < pageCount; p++) {
     applyState(slotOf(p).index)
-    textPool.push(pageChars(controller))
+    for (const [alias, set] of pageChars(controller)) {
+      let acc = charMap.get(alias)
+      if (!acc) {
+        acc = new Set<number>()
+        charMap.set(alias, acc)
+      }
+      for (const cp of set) acc.add(cp)
+    }
   }
   if (rowMode) controller.setPreviewRow(null)
   else if (serialActive) controller.setSeqValue(prevSeq)
@@ -1143,12 +1232,12 @@ export async function buildVectorPdf(
     compress: true,
   })
 
-  // 内嵌中文字体（失败时降级 Helvetica，不影响图形/条码导出）
-  // 仅当确有待用 FONT_ALIAS 渲染的字符时才内嵌子集，纯拉丁文档可跳过（体积更小）
-  const allChars = new Set<number>()
-  for (const s of textPool) for (const ch of s) allChars.add(ch.codePointAt(0)!)
-  const font = allChars.size > 0 ? await subsetFont(allChars) : null
-  if (font) font.embed(doc)
+  // 逐字体内嵌子集（某款失败只降级那一款，不影响图形/条码/其它字体）
+  // 纯拉丁且全走内置字体的文档 charMap 为空 → 完全不内嵌，体积最小
+  for (const [alias, set] of charMap) {
+    const f = await subsetFont(alias, set)
+    if (f) f.embed(doc)
+  }
 
   // 去掉选中框（捕获干净画面）
   const prevSel = canvas.getActiveObject()

@@ -8,6 +8,7 @@ import DataDock from '@/sections/DataDock'
 import AssetsPanel from '@/sections/AssetsPanel'
 import type { AssetItem } from '@/types/assets'
 import { CanvasController } from '@/lib/canvasEngine'
+import { ensureEmbeddedFonts } from '@/lib/webFonts'
 
 /**
  * 按需加载的重依赖 —— 都不在编辑器启动路径上，只在实际用到时才下载：
@@ -215,6 +216,9 @@ export default function App() {
     })
     ctrlRef.current = ctrl
     if (import.meta.env.DEV) (window as unknown as { __appCtrl?: CanvasController }).__appCtrl = ctrl
+    // 内嵌字体（窄体/超粗）异步加载：就绪后重排文本。
+    // 字体未就绪时 fabric 只能用 fallback 字体量宽度 —— 盒宽与断行都会偏，必须补一次重算。
+    void ensureEmbeddedFonts().then(() => ctrlRef.current?.refreshTextMetrics())
     // 把 canvas 设为视口大小(替代旧方案"整张工作区 + CSS 缩放");缩放/平移改由 fabric viewportTransform 承担
     ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
     setObjectCount(0)

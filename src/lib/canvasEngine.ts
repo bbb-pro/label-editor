@@ -1363,6 +1363,40 @@ export class CanvasController {
     this.emitActive()
   }
 
+  /**
+   * 字体数据到位后重算所有文本的排版尺寸。
+   *
+   * 内嵌字体（窄体 / 超粗）是**异步加载**的：在字体就绪之前，fabric 只能拿 fallback 字体
+   * 去量字符宽度 —— Textbox 的断行、IText 的盒宽都会算偏（窄体尤其明显，字宽差 15% 以上）。
+   * 所以 `ensureEmbeddedFonts()` 完成后必须补一次重算，否则「选了窄体却按 Arial 的宽度排版」，
+   * 画布与 PDF 又会对不上。
+   *
+   * 组内文本同样要重算，否则组的边界框还是旧的（选中框偏移、导出包围盒偏大）。
+   */
+  refreshTextMetrics() {
+    let touched = false
+    const visit = (o: fabric.Object) => {
+      const kids = (o as unknown as { _objects?: fabric.Object[] })._objects
+      if (Array.isArray(kids)) {
+        kids.forEach(visit)
+        // 组边界按新的子对象尺寸重算（fabric 的 width/height 是缓存值）
+        const recalc = (o as unknown as { _calcBounds?: () => void })._calcBounds
+        if (typeof recalc === 'function') recalc.call(o)
+        o.setCoords()
+        return
+      }
+      const init = (o as unknown as { initDimensions?: () => void }).initDimensions
+      if (typeof init !== 'function') return
+      init.call(o)
+      o.setCoords()
+      touched = true
+    }
+    for (const o of this.canvas.getObjects()) visit(o)
+    if (!touched) return
+    this.canvas.requestRenderAll()
+    this.emitActive()
+  }
+
   // ── 纸张 ────────────────────────────────────────────────
   /** 改当前活动纸的尺寸（面板的纸张宽/高） */
   applyPaper(paper: PaperSize) {
