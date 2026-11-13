@@ -1,5 +1,9 @@
 // 文本样式：字体与常用字号清单（标签打印常用）
 
+// 向上依赖：normalizeFontFamily 需要知道「这个名字是不是用户自己上传的字体」。
+// userFonts 不反向依赖本文件（否则成环，const 的 TDZ 会让打包后运行时报未定义）。
+import { isUserFontFamily, USER_FAMILY_PREFIX } from '@/lib/userFonts'
+
 /**
  * 可选字体清单 —— **只收录导出 PDF 时能真正保真的字体**。
  *
@@ -138,6 +142,9 @@ const KEEP_BY_LOWER = new Map(FONT_FAMILIES.map((f) => [f.value.toLowerCase(), f
 export function normalizeFontFamily(name: unknown): string {
   const raw = String(name ?? '').trim()
   if (!raw) return DEFAULT_FONT
+  // 用户自己上传的字体（`LEU xxx`）：已注册就原样保留 —— 它的字形数据就在浏览器里，
+  // 画布与 PDF 用的是同一份，属于「能保真」的字体，不能像未知字体那样归一成 Arial。
+  if (isUserFontFamily(raw) || raw.startsWith(USER_FAMILY_PREFIX)) return raw
   const lower = raw.toLowerCase()
   const kept = KEEP_BY_LOWER.get(lower)
   if (kept) return kept

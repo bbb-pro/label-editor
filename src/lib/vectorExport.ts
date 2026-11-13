@@ -15,6 +15,7 @@ import type { CanvasController } from '@/lib/canvasEngine'
 import { pxToMm } from '@/lib/mm'
 import { pxToPt, canUseBuiltinFont } from '@/lib/textStyles'
 import { fontFileUrl } from '@/lib/webFonts'
+import { userFontPdfMapping, userFontBytes, userFontAliasInfo } from '@/lib/userFonts'
 import { type BarcodeType, type BarcodeRenderSettings, DEFAULT_BARCODE_SETTINGS } from '@/lib/barcode'
 import { renderBarcodeVectorRects } from '@/lib/barcodeVector'
 import {
@@ -51,6 +52,22 @@ const EMBED_FONTS: Record<string, EmbedFontDef> = {
   LENarrowPDF: { file: 'PT-Sans-Narrow-Regular.ttf', label: '窄体' },
   LENarrowBoldPDF: { file: 'PT-Sans-Narrow-Bold.ttf', label: '窄体粗体', bold: true },
   LEBlackPDF: { file: 'Archivo-Black-Regular.ttf', label: '超粗' },
+}
+
+/**
+ * 内嵌字体查询（含**用户上传**的字体）。
+ *
+ * 用户字体没有 `public/fonts/` 下的文件，字节在 `lib/userFonts.ts` 的运行时注册表里
+ * （来源 = IndexedDB 里用户上传的 .ttf），所以这里把两类合并成同一个查询入口：
+ * 上层只关心「这个 alias 是不是内嵌字体、粗不粗」，不关心字节从哪来。
+ */
+function embedFontDef(alias: string): EmbedFontDef | undefined {
+  const builtin = EMBED_FONTS[alias]
+  if (builtin) return builtin
+  const info = userFontAliasInfo(alias)
+  if (!info) return undefined
+  // file 留空：user font 的字节走 userFontBytes()，不 fetch
+  return { file: '', label: info.label, bold: info.bold }
 }
 
 /**
@@ -149,11 +166,27 @@ const FABRIC_ASCENT_MULT = FABRIC_LINE_MULT * (1 - FABRIC_FONT_SIZE_FRACTION)
  */
 function pdfFontFor(obj: fabric.Object, content: string, forceBold?: boolean): string {
   const fam = String((obj as { fontFamily?: string }).fontFamily ?? '').toLowerCase().trim()
-  if (!canUseBuiltinFont(content)) return FONT_ALIAS
-  // 字体族列表（"Arial, SimHei"）取第一个能识别的（内置字体与内嵌字体都算"能识别"）
+  // 字体族列表（"Arial, SimHei"）取第一个能识别的（内置 / 内嵌 / 用户字体都算"能识别"）
   const key = fam.includes(',')
-    ? (fam.split(',').map((s) => s.trim()).find((s) => CANVAS_TO_PDF_FONT[s] || EMBEDDED_FAMILY_TO_PDF[s]) ?? fam)
+    ? (fam
+        .split(',')
+        .map((s) => s.trim())
+        .find((s) => CANVAS_TO_PDF_FONT[s] || EMBEDDED_FAMILY_TO_PDF[s] || userFontPdfMapping(s)) ?? fam)
     : fam
+
+  // ① 用户上传的字体优先级最高：它的字形数据就在浏览器里，画布与 PDF 同源。
+  //    ⚠️ 必须在 canUseBuiltinFont 之前判断 —— 否则用户上传的中文字体会被
+  //    「含中文 → 一律走黑体」的规则抢走，选了什么字体都白搭。
+  const user = userFontPdfMapping(key)
+  if (user) {
+    // 例外：字体本身不含中文字形，而这段文本偏要打中文 → 退回黑体。
+    // （画布上会显示成豆腐块，但至少 PDF 里的字是实的，不会印出一片空白）
+    if (!user.cjk && !canUseBuiltinFont(content)) return FONT_ALIAS
+    const bold = forceBold ?? isBoldObj(obj)
+    return bold && user.bold ? user.bold : user.normal
+  }
+
+  if (!canUseBuiltinFont(content)) return FONT_ALIAS
   const builtin = CANVAS_TO_PDF_FONT[key]
   if (builtin) return builtin
   // 内嵌字体（窄体/超粗）：按粗体选真粗体文件，没有粗体变体就退回常规
@@ -253,13 +286,19 @@ function parseColor(color: string | null | undefined): [number, number, number] 
   return null
 }
 
-/* ── 字体子集化 + 内嵌（黑体 / 窄体 / 超粗） ─────────────── */
+/* ── 字体子集化 + 内嵌（黑体 / 窄体 / 超粗 / 用户上传字体） ─────────────── */
 
 /** TTF 原始字节的内存缓存（按 alias）：避免每次导出都重新 fetch 字体文件 */
 const _ttfCache = new Map<string, ArrayBuffer>()
 async function loadTtf(alias: string): Promise<ArrayBuffer> {
   const hit = _ttfCache.get(alias)
   if (hit) return hit
+  // 用户上传的字体：字节来自 IndexedDB（lib/userFonts.ts 启动时已载入内存），没有文件可 fetch
+  const fromUser = userFontBytes(alias)
+  if (fromUser) {
+    _ttfCache.set(alias, fromUser)
+    return fromUser
+  }
   const def = EMBED_FONTS[alias]
   if (!def) throw new Error(`未注册的内嵌字体：${alias}`)
   const resp = await fetch(fontFileUrl(def.file))
@@ -301,7 +340,7 @@ async function subsetFont(
     }
   } catch (err) {
     console.warn(
-      `[vectorExport] 字体子集化失败（${EMBED_FONTS[alias]?.label ?? alias}），该字体将降级`,
+      `[vectorExport] 字体子集化失败（${embedFontDef(alias)?.label ?? alias}），该字体将降级`,
       err,
     )
     return null
@@ -469,8 +508,8 @@ function drawTextObject(doc: jsPDF, o: Leaf, content: string) {
   //   ① 内置字体（Helvetica/Times/Courier）→ 有真 bold 字重，交给 PDF 直接排；
   //   ② 内嵌字体但 alias 本身就是粗体文件（LENarrowBoldPDF）→ 已是粗字形，不要再加粗；
   //   ③ 内嵌字体且没有粗体变体（黑体 / 超粗）→ 用 PDF 原生「填充+描边」近似加粗。
-  const isEmbeddedFont = !!EMBED_FONTS[pdfFont]
-  const aliasIsBold = !!EMBED_FONTS[pdfFont]?.bold
+  const isEmbeddedFont = !!embedFontDef(pdfFont)
+  const aliasIsBold = !!embedFontDef(pdfFont)?.bold
   const useBuiltinBold = !isEmbeddedFont && isBold
   doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
   doc.setFontSize(fontSizePt)
@@ -1026,8 +1065,8 @@ function drawTableVector(doc: jsPDF, o: Leaf) {
       const isBoldCell = !!spec.bold || (headerRow && r === 0)
       // 表格的粗体是「整表/表头」决定的，sample 单元格对象上读不到，故显式传入
       const pdfFont = pdfFontFor(sample ?? o, text, isBoldCell)
-      const isEmbeddedFont = !!EMBED_FONTS[pdfFont]
-      const aliasIsBold = !!EMBED_FONTS[pdfFont]?.bold
+      const isEmbeddedFont = !!embedFontDef(pdfFont)
+      const aliasIsBold = !!embedFontDef(pdfFont)?.bold
       const useBuiltinBold = !isEmbeddedFont && isBoldCell
       doc.setFont(pdfFont, useBuiltinBold ? 'bold' : 'normal')
       doc.setFontSize(fontSizePt)
@@ -1126,7 +1165,7 @@ async function drawLeaf(doc: jsPDF, o: Leaf, ctrl: CanvasController) {
 function pageChars(ctrl: CanvasController): Map<string, Set<number>> {
   const out = new Map<string, Set<number>>()
   const add = (alias: string, text: string) => {
-    if (!EMBED_FONTS[alias]) return
+    if (!embedFontDef(alias)) return
     let set = out.get(alias)
     if (!set) {
       set = new Set<number>()

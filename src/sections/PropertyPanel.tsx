@@ -1,6 +1,6 @@
 // 右侧属性面板：纸张 / 选中对象几何 / 内容 / 文本格式
 import type { ReactNode } from 'react'
-import { useRef, useState } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -45,6 +45,7 @@ import {
   Columns3,
   Minus as MinusGlyph,
   Plus as PlusGlyph,
+  FileUp,
 } from 'lucide-react'
 import type { PaperSize, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
@@ -52,6 +53,7 @@ import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot,
 import type { TableSpec } from '@/lib/table'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { FONT_FAMILIES, CJK_FONT } from '@/lib/textStyles'
+import { isUserFontFamily, subscribeUserFonts, getUserFontsSnapshot } from '@/lib/userFonts'
 import MmField from '@/components/editor/MmField'
 import { cn } from '@/lib/utils'
 
@@ -106,6 +108,8 @@ interface PropertyPanelProps {
   onTableColDelta: (delta: number) => void
   /** 表格：打开对话框（默认落在「单元格内容」页，也可直达「行高/列宽」页） */
   onOpenTableEditor: (tab?: 'content' | 'size') => void
+  /** 文本：打开「本机字体」对话框（上传 .ttf，画布与导出 PDF 用同一份字形） */
+  onOpenFontManager: () => void
   objectCount: number
   /** 仅内容模式：供移动端底部抽屉复用（自行包裹滚动） */
   bare?: boolean
@@ -254,6 +258,7 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onTableRowDelta={props.onTableRowDelta}
           onTableColDelta={props.onTableColDelta}
           onOpenTableEditor={props.onOpenTableEditor}
+          onOpenFontManager={props.onOpenFontManager}
         />
       ) : (
         <EmptySelection objectCount={props.objectCount} />
@@ -304,30 +309,55 @@ function TextFormatSection({
   region,
   onChange,
   onRegionChange,
+  onOpenFontManager,
 }: {
   fmt: TextFormatSnapshot
   keySeed: string
   region?: { border: boolean; bg: boolean }
   onChange: (patch: Partial<TextStyle>) => void
   onRegionChange: (r: { border: boolean; bg: boolean }) => void
+  /** 打开「本机字体」对话框（上传 .ttf） */
+  onOpenFontManager: () => void
 }) {
+  // 用户上传的字体是运行时集合（IndexedDB），用外部 store 订阅，
+  // 上传/删除后下拉框自动跟着变，不需要父级层层传状态。
+  const userFonts = useSyncExternalStore(subscribeUserFonts, getUserFontsSnapshot, getUserFontsSnapshot)
+  const fontOptions = [
+    ...FONT_FAMILIES,
+    ...userFonts.map((rec) => ({
+      value: rec.canvasFamily,
+      label: `${rec.family}${rec.cjk ? '' : '（仅西文）'}`,
+    })),
+  ]
   return (
     <Section title="字体">
       <div className="space-y-2">
         <div className="grid grid-cols-2 gap-2">
-          {/* 字体 */}
-          <Select value={fmt.fontFamily} onValueChange={(v) => onChange({ fontFamily: v })}>
-            <SelectTrigger className="col-span-2 h-8 text-xs">
-              <SelectValue placeholder="字体" />
-            </SelectTrigger>
-            <SelectContent>
-              {FONT_FAMILIES.map((f) => (
-                <SelectItem key={f.value} value={f.value} className="text-xs">
-                  {f.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* 字体 + 本机字体入口 */}
+          <div className="col-span-2 flex items-center gap-1.5">
+            <Select value={fmt.fontFamily} onValueChange={(v) => onChange({ fontFamily: v })}>
+              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs">
+                <SelectValue placeholder="字体" />
+              </SelectTrigger>
+              <SelectContent>
+                {fontOptions.map((f) => (
+                  <SelectItem key={f.value} value={f.value} className="text-xs">
+                    {f.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 w-8 shrink-0 p-0"
+              title="上传本机字体（.ttf）：画布与导出 PDF 用同一份字形"
+              aria-label="上传本机字体"
+              onClick={onOpenFontManager}
+            >
+              <FileUp className="h-3.5 w-3.5" />
+            </Button>
+          </div>
           {/* 字号(pt)：只保留一个数字输入框（原生上下微调箭头已够用，不再另设预设框） */}
           <FontSizeField
             key={keySeed}
@@ -349,8 +379,9 @@ function TextFormatSection({
           含中文 / 特殊符号的文本：PDF 里只能走内嵌黑体（其余字体没有这些字形），
           而画布上拉丁字体也会回退到系统字体 → 两边不一致。提示改用黑体即可所见即所得。
           判据 needsEmbeddedFont 与导出侧共用（canUseBuiltinFont），保证提示不撒谎。
+          ⚠️ 用户上传的字体要排除：它自带字形数据、导出时内嵌的就是它自己，不存在回退。
         */}
-        {fmt.needsEmbeddedFont && fmt.fontFamily !== CJK_FONT && (
+        {fmt.needsEmbeddedFont && fmt.fontFamily !== CJK_FONT && !isUserFontFamily(fmt.fontFamily) && (
           <div className="rounded border border-dashed border-amber-300/60 bg-amber-50/40 px-2 py-1.5">
             <p className="text-[10px] leading-relaxed text-amber-800">
               含中文 / 特殊符号：导出时统一用内嵌「黑体」，当前字体会在画布上回退系统字体。
@@ -475,6 +506,7 @@ function SelectedObjectPanel({
   onTableRowDelta,
   onTableColDelta,
   onOpenTableEditor,
+  onOpenFontManager,
 }: Omit<
   PropertyPanelProps,
   'active' | 'paper' | 'onPaperChange' | 'paperColor' | 'onPaperColorChange' | 'objectCount' | 'currentRow'
@@ -791,6 +823,7 @@ function SelectedObjectPanel({
           region={active.textRegion}
           onChange={onTextStyleChange}
           onRegionChange={onTextRegionChange}
+          onOpenFontManager={onOpenFontManager}
         />
       )}
 

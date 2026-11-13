@@ -9,6 +9,7 @@ import AssetsPanel from '@/sections/AssetsPanel'
 import type { AssetItem } from '@/types/assets'
 import { CanvasController } from '@/lib/canvasEngine'
 import { ensureEmbeddedFonts } from '@/lib/webFonts'
+import { initUserFonts } from '@/lib/userFonts'
 
 /**
  * 按需加载的重依赖 —— 都不在编辑器启动路径上，只在实际用到时才下载：
@@ -37,6 +38,7 @@ import type { ActiveObject } from '@/types/editor'
 import type { TextStyle, SerialSpec, BarcodeAlign } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
 import TableEditorDialog from '@/components/editor/TableEditorDialog'
+import FontManagerDialog from '@/components/editor/FontManagerDialog'
 import type { TableSpec } from '@/lib/table'
 import TemplateLibrary from '@/sections/TemplateLibrary'
 import HelpCenter from '@/sections/HelpCenter'
@@ -79,6 +81,8 @@ export default function App() {
   const [tableEditorOpen, setTableEditorOpen] = useState(false)
   /** 打开时落在哪个页签：面板「编辑内容」/「行高列宽」两个按钮各直达一页 */
   const [tableEditorTab, setTableEditorTab] = useState<'content' | 'size'>('content')
+  /** 本机字体管理（上传 .ttf） */
+  const [fontManagerOpen, setFontManagerOpen] = useState(false)
   const [active, setActive] = useState<ActiveObject | null>(null)
   // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态。
   // 在 effect 中同步，避免渲染期写 ref（并发模式下会被丢弃且属反模式）。
@@ -216,9 +220,11 @@ export default function App() {
     })
     ctrlRef.current = ctrl
     if (import.meta.env.DEV) (window as unknown as { __appCtrl?: CanvasController }).__appCtrl = ctrl
-    // 内嵌字体（窄体/超粗）异步加载：就绪后重排文本。
-    // 字体未就绪时 fabric 只能用 fallback 字体量宽度 —— 盒宽与断行都会偏，必须补一次重算。
-    void ensureEmbeddedFonts().then(() => ctrlRef.current?.refreshTextMetrics())
+    // 字体就绪后重排文本：内嵌字体（窄体/超粗）与用户上传的本机字体都是异步加载的，
+    // 在字体到位之前 fabric 只能拿 fallback 字体量宽度 —— 盒宽与断行都会偏，必须补一次重算。
+    void Promise.all([ensureEmbeddedFonts(), initUserFonts()]).then(() =>
+      ctrlRef.current?.refreshTextMetrics(),
+    )
     // 把 canvas 设为视口大小(替代旧方案"整张工作区 + CSS 缩放");缩放/平移改由 fabric viewportTransform 承担
     ctrl.setViewportSize(stage.clientWidth, stage.clientHeight)
     setObjectCount(0)
@@ -953,6 +959,10 @@ export default function App() {
   const openTableEditor = useCallback((tab: 'content' | 'size' = 'content') => {
     setTableEditorTab(tab)
     setTableEditorOpen(true)
+  }, [])
+  /** 字体集合变化（上传 / 删除）后重排文本：字宽度量变了，盒宽与断行要跟着重算 */
+  const refreshAfterFontChange = useCallback(() => {
+    ctrlRef.current?.refreshTextMetrics()
   }, [])
   const onGeometry = useCallback(
     (
@@ -1915,6 +1925,7 @@ export default function App() {
             onTableRowDelta={onTableRowDelta}
             onTableColDelta={onTableColDelta}
             onOpenTableEditor={openTableEditor}
+            onOpenFontManager={() => setFontManagerOpen(true)}
             objectCount={objectCount}
           />
         )}
@@ -1975,6 +1986,7 @@ export default function App() {
                 onTableRowDelta={onTableRowDelta}
                 onTableColDelta={onTableColDelta}
                 onOpenTableEditor={openTableEditor}
+                onOpenFontManager={() => setFontManagerOpen(true)}
                 objectCount={objectCount}
                 bare
               />
@@ -2009,6 +2021,13 @@ export default function App() {
           onChange={onTableSpecChange}
         />
       )}
+
+      {/* 本机字体：上传 .ttf 后画布立即可用，导出时内嵌同一份字形（不做位图化） */}
+      <FontManagerDialog
+        open={fontManagerOpen}
+        onOpenChange={setFontManagerOpen}
+        onChanged={refreshAfterFontChange}
+      />
 
       <BatchDialog
         open={batchMode !== null}
