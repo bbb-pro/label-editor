@@ -34,6 +34,44 @@ import {
 
 export type ActiveObjectSnapshot = ActiveObject
 
+// ── 旋转吸附 ────────────────────────────────────────────────
+/**
+ * 旋转手柄的「角度吸附」：步进 15°、±3° 内锁定。
+ * 15° 步进天然覆盖 0/45/90/135/180/270… 这些标签里最常用的角度（用户要的 45° 就在其中），
+ * 转 20°/30° 这类非整步角度时仍有足够自由区间，不会被粘住。
+ *
+ * ⚠️ fabric 5 只有 `snapAngle`（步进）+ `snapThreshold`（阈值，**单位是度**），
+ * 没有 fabric 6 的 `rotationSnaps` 数组。两者都**不在** `stateProperties` 里，
+ * 所以不会写进 JSON —— 挂在 prototype 上即可让所有对象（含载入的模板、多选整体）
+ * 统一生效，且旧存档不会用 `snapAngle: 0` 把它顶掉。
+ */
+const ROTATE_SNAP_STEP_DEG = 15
+const ROTATE_SNAP_TOL_DEG = 3
+
+/** 开/关旋转吸附（跟随工具栏「吸附」开关，与位置吸附共用同一状态） */
+function setRotationSnap(on: boolean) {
+  const proto = fabric.Object.prototype as unknown as {
+    snapAngle?: number
+    snapThreshold?: number | null
+  }
+  proto.snapAngle = on ? ROTATE_SNAP_STEP_DEG : 0
+  proto.snapThreshold = on ? ROTATE_SNAP_TOL_DEG : null
+}
+setRotationSnap(true)
+
+/**
+ * 直线的视觉长度（px）= 两端点距离。
+ * 不用 `width`/`height`：它们对直线只是**水平/垂直分量**（竖线宽≈0、横线高≈0），
+ * 表达不了斜线长度；`x2-x1` 才是几何真值（fabric 渲染端点就是 ±width/2，
+ * 而 `width === |x2-x1|`，两者等价，但分量关系只有端点差能算）。
+ */
+function lineLengthPx(obj: fabric.Object) {
+  const ln = obj as fabric.Line
+  const dx = ((ln.x2 ?? 0) - (ln.x1 ?? 0)) * (obj.scaleX ?? 1)
+  const dy = ((ln.y2 ?? 0) - (ln.y1 ?? 0)) * (obj.scaleY ?? 1)
+  return Math.hypot(dx, dy)
+}
+
 export interface ControllerEvents {
   onActiveChange(snap: ActiveObjectSnapshot | null): void
   /** 多选/编组状态（count≥2 为多对象，isGroup=true 为单个编组整体，isBarcodeGroup=true 为单个条码组） */
@@ -647,6 +685,8 @@ export class CanvasController {
   }
   setSnapEnabled(on: boolean) {
     this._snapEnabled = on
+    // 旋转吸附与位置吸附共用同一个开关：关掉就彻底自由旋转
+    setRotationSnap(on)
     if (!on) this.clearGuides()
   }
 
@@ -1162,6 +1202,7 @@ export class CanvasController {
     let strokeWidth: number | undefined
     let strokeColor: string | undefined
     let fillColor: string | null | undefined
+    let lineLength: number | undefined
     let cornerRadiusMm: number | undefined
     let shapeType: ShapeType | undefined
     let prefix = c._prefix ?? ''
@@ -1210,6 +1251,8 @@ export class CanvasController {
         cornerRadiusMm = roundMm(pxToMm((rect.rx ?? 0) * (rect.scaleX ?? 1)))
       }
       if (kind === 'shape') shapeType = c._shapeType ?? 'ellipse'
+      // 直线：面板的「长度」用端点距离（width/height 只是分量，无法表达斜线长度）
+      if (kind === 'line') lineLength = roundMm(pxToMm(lineLengthPx(obj)))
       prefix = ''
       suffix = ''
       serial = undefined
@@ -1248,6 +1291,7 @@ export class CanvasController {
       strokeWidth: strokeWidth != null ? Math.round(strokeWidth * 10) / 10 : undefined,
       strokeColor,
       fillColor,
+      lineLength,
       cornerRadiusMm,
       prefix: isContentKind(kind) ? prefix : undefined,
       suffix: isContentKind(kind) ? suffix : undefined,
@@ -1825,7 +1869,17 @@ export class CanvasController {
   }
 
   // ── 对象：几何/角度 ─────────────────────────────────────
-  setActiveGeometry(patch: Partial<{ x: number; y: number; width: number; height: number; angle: number }>) {
+  setActiveGeometry(
+    patch: Partial<{
+      x: number
+      y: number
+      width: number
+      height: number
+      angle: number
+      /** 仅直线：目标长度（mm，端点距离）。方向保持不变 */
+      lineLength: number
+    }>,
+  ) {
     const obj = this.getActiveObject()
     if (!obj) return
     const c = cf(obj)
@@ -1851,6 +1905,16 @@ export class CanvasController {
     if (patch.x !== undefined) obj.set({ left: mmToPx(patch.x) + owner.left })
     if (patch.y !== undefined) obj.set({ top: mmToPx(patch.y) + owner.top })
     if (patch.angle !== undefined) obj.set({ angle: patch.angle })
+    // 直线长度：按端点距离等比缩放两个方向 —— 方向不变（等比不旋转），
+    // 描边也不会变粗（项目里 line 恒为 strokeUniform: true）。
+    if (c.kind === 'line' && patch.lineLength !== undefined) {
+      const cur = lineLengthPx(obj)
+      const target = mmToPx(patch.lineLength)
+      if (cur > 0.001 && target > 0.001) {
+        const k = target / cur
+        obj.set({ scaleX: (obj.scaleX ?? 1) * k, scaleY: (obj.scaleY ?? 1) * k })
+      }
+    }
     if (patch.width !== undefined) {
       if (isText && obj instanceof fabric.Textbox) {
         // 文本框：宽度即盒宽，直接改 width，避免 scale 随 initDimensions 坍塌

@@ -67,7 +67,9 @@ interface PropertyPanelProps {
   objectNames: string[]
   headers: string[]
   currentRow: DataRow | null
-  onGeometry: (patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle'>>) => void
+  onGeometry: (
+    patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle' | 'lineLength'>>,
+  ) => void
   onContentChange: (text: string) => void
   onTextStyleChange: (patch: Partial<TextStyle>) => void
   onBarcodeTypeChange: (t: BarcodeType) => void
@@ -483,6 +485,7 @@ function SelectedObjectPanel({
   const isText = active.kind === 'text'
   const isBarcode = active.kind === 'barcode'
   const isStroke = active.kind === 'rect' || active.kind === 'shape' || active.kind === 'line'
+  const isLine = active.kind === 'line'
   // 矢量素材：线稿类（图标）可改描边色；彩绘类（emoji）保持原色，故不显示改色控件
   const isSvgAsset = active.kind === 'svg'
   const isTable = active.kind === 'table'
@@ -551,27 +554,40 @@ function SelectedObjectPanel({
         <div className="grid grid-cols-2 gap-2">
           <MmField label="X (mm)" value={active.x} onChange={(v) => onGeometry({ x: v })} />
           <MmField label="Y (mm)" value={active.y} onChange={(v) => onGeometry({ y: v })} />
-          <MmField
-            label="宽 (mm)"
-            value={active.width}
-            disabled={active.kind === 'line'}
-            onChange={(v) => onGeometry({ width: v })}
-          />
-          <MmField
-            label="高 (mm)"
-            value={active.height}
-            disabled={active.kind === 'line'}
-            onChange={(v) => onGeometry({ height: v })}
-          />
+          {isLine ? (
+            <>
+              {/* 直线没有「宽/高」概念（竖线宽≈0、横线高≈0），给一个真正的长度 */}
+              <MmField
+                label="长度 (mm)"
+                value={active.lineLength ?? 0}
+                step={0.5}
+                onChange={(v) => onGeometry({ lineLength: Math.max(0.1, v) })}
+              />
+              <MmField
+                label="旋转角度"
+                value={active.angle}
+                suffix="°"
+                step={1}
+                onChange={(v) => onGeometry({ angle: v })}
+              />
+            </>
+          ) : (
+            <>
+              <MmField label="宽 (mm)" value={active.width} onChange={(v) => onGeometry({ width: v })} />
+              <MmField label="高 (mm)" value={active.height} onChange={(v) => onGeometry({ height: v })} />
+            </>
+          )}
         </div>
-        <MmField
-          label="旋转角度 (°)"
-          value={active.angle}
-          suffix="°"
-          step={1}
-          disabled={isTable}
-          onChange={(v) => onGeometry({ angle: v })}
-        />
+        {!isLine && (
+          <MmField
+            label="旋转角度 (°)"
+            value={active.angle}
+            suffix="°"
+            step={1}
+            disabled={isTable}
+            onChange={(v) => onGeometry({ angle: v })}
+          />
+        )}
       </Section>
 
       {isTable && table && (

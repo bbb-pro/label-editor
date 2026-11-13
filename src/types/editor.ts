@@ -67,6 +67,12 @@ export interface ActiveObject {
   width: number
   height: number
   angle: number
+  /**
+   * 仅 kind==='line'：直线视觉长度（mm）= 两端点距离，**不含描边**。
+   * 直线的 width/height 只是水平/垂直分量（竖线宽≈0、且含 strokeWidth），
+   * 想按数字改长度必须用这个字段。
+   */
+  lineLength?: number
   /** 文本/条码原文（含 {{变量}}），图片为 null */
   text: string | null
   /** 矩形/直线：描边粗细（px，strokeUniform 恒定不随缩放） */

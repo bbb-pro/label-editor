@@ -951,7 +951,9 @@ export default function App() {
     setTableEditorOpen(true)
   }, [])
   const onGeometry = useCallback(
-    (patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle'>>) => {
+    (
+      patch: Partial<Pick<ActiveObject, 'x' | 'y' | 'width' | 'height' | 'angle' | 'lineLength'>>,
+    ) => {
       const ctrl = ctrlRef.current
       if (!ctrl || !ctrl.canvas.getActiveObject()) return
       ctrl.beginFieldEdit()
