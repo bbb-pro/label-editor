@@ -2,6 +2,7 @@
 import type { DataRow, ElementKind, ShapeType } from '@/types/template'
 import type { BarcodeType, BarcodeRenderSettings } from '@/lib/barcode'
 import type { TableSpec } from '@/lib/table'
+import type { DateSpec } from '@/lib/dateSpec'
 
 /** 文本元素格式（顶层属性，可整段应用） */
 export interface TextStyle {
@@ -99,6 +100,8 @@ export interface ActiveObject {
   barcodeTextOffsetMm?: number
   /** 仅条码对象：对齐/生长锚点（内容变长条码变宽时向哪一侧扩展），默认 'left' */
   barcodeAlign?: BarcodeAlign
+  /** 仅日期对象（kind==='text' 且挂 _dateSpec）：日期格式 / 值 / 关联公式 */
+  dateSpec?: DateSpec
   /** 仅文本对象：文本格式 */
   textFormat?: TextFormatSnapshot
   /** 仅文本对象：区域框（开启后显示边框+底色，类似"区域文本框"） */

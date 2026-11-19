@@ -39,6 +39,7 @@ import type { TextStyle, SerialSpec, BarcodeAlign } from '@/types/editor'
 import BatchDialog from '@/components/editor/BatchDialog'
 import TableEditorDialog from '@/components/editor/TableEditorDialog'
 import FontManagerDialog from '@/components/editor/FontManagerDialog'
+import DatePickerDialog from '@/components/editor/DatePickerDialog'
 import type { TableSpec } from '@/lib/table'
 import TemplateLibrary from '@/sections/TemplateLibrary'
 import HelpCenter from '@/sections/HelpCenter'
@@ -83,6 +84,11 @@ export default function App() {
   const [tableEditorTab, setTableEditorTab] = useState<'content' | 'size'>('content')
   /** 本机字体管理（上传 .ttf） */
   const [fontManagerOpen, setFontManagerOpen] = useState(false)
+  /** 日历对话框：双击日期对象 / 属性面板按钮打开；target 为日期对象 id */
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const [dateTargetId, setDateTargetId] = useState<string | null>(null)
+  /** 可作公式来源的日期对象列表（随画布内容变化刷新） */
+  const [dateObjects, setDateObjects] = useState<{ id: string; name: string }[]>([])
   const [active, setActive] = useState<ActiveObject | null>(null)
   // 始终指向最新 active 快照，供回调（useCallback 空依赖）读取当前锁定态。
   // 在 effect 中同步，避免渲染期写 ref（并发模式下会被丢弃且属反模式）。
@@ -169,6 +175,10 @@ export default function App() {
       },
       onSelection: (info) => setSelection(info),
       onHistoryChange: () => syncHistory(),
+      onEditDate: (objId) => {
+        setDateTargetId(objId || null)
+        setDatePickerOpen(true)
+      },
       onDirty: () => {
         setObjectCount(ctrl.getObjectCount())
         // 数组类派生数据：内容不变时复用旧引用，避免拖动/导出期间的无谓重渲染
@@ -179,6 +189,12 @@ export default function App() {
         setObjectNames((prev) => {
           const next = ctrl.collectContentNames()
           return prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next
+        })
+        setDateObjects((prev) => {
+          const next = ctrl.listDateObjects()
+          return prev.length === next.length && prev.every((v, i) => v.id === next[i].id && v.name === next[i].name)
+            ? prev
+            : next
         })
         setActiveSerial((prev) => {
           const next = ctrl.firstSerial()
@@ -847,6 +863,9 @@ export default function App() {
     switch (tool) {
       case 'text':
         ctrl.addText()
+        break
+      case 'date':
+        ctrl.addDate()
         break
       case 'text-paragraph':
         ctrl.addParagraphText()
@@ -1926,6 +1945,13 @@ export default function App() {
             onTableColDelta={onTableColDelta}
             onOpenTableEditor={openTableEditor}
             onOpenFontManager={() => setFontManagerOpen(true)}
+            onDateSpecChange={(patch) => {
+              const id = activeRef.current?.id
+              ctrlRef.current?.pushHistory()
+              if (id) ctrlRef.current?.updateDateSpecById(id, patch)
+            }}
+            dateObjects={dateObjects}
+            onOpenDatePicker={() => { setDateTargetId(activeRef.current?.id ?? null); setDatePickerOpen(true) }}
             objectCount={objectCount}
           />
         )}
@@ -1987,6 +2013,13 @@ export default function App() {
                 onTableColDelta={onTableColDelta}
                 onOpenTableEditor={openTableEditor}
                 onOpenFontManager={() => setFontManagerOpen(true)}
+                onDateSpecChange={(patch) => {
+                  const id = activeRef.current?.id
+                  ctrlRef.current?.pushHistory()
+                  if (id) ctrlRef.current?.updateDateSpecById(id, patch)
+                }}
+                dateObjects={dateObjects}
+                onOpenDatePicker={() => { setDateTargetId(activeRef.current?.id ?? null); setDatePickerOpen(true) }}
                 objectCount={objectCount}
                 bare
               />
@@ -2027,6 +2060,18 @@ export default function App() {
         open={fontManagerOpen}
         onOpenChange={setFontManagerOpen}
         onChanged={refreshAfterFontChange}
+      />
+
+      <DatePickerDialog
+        key={`${dateTargetId ?? ''}|${dateTargetId ? (ctrlRef.current?.dateValueOf(dateTargetId) ?? '') : ''}`}
+        open={datePickerOpen}
+        onOpenChange={setDatePickerOpen}
+        value={dateTargetId ? (ctrlRef.current?.dateValueOf(dateTargetId) ?? '') : ''}
+        onCommit={(value) => {
+          if (!dateTargetId) return
+          ctrlRef.current?.pushHistory()
+          ctrlRef.current?.updateDateSpecById(dateTargetId, { value })
+        }}
       />
 
       <BatchDialog

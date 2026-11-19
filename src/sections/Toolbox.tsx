@@ -14,6 +14,7 @@ import {
   ImageUp,
   Sparkles,
   Table as TableIcon,
+  CalendarDays,
 } from 'lucide-react'
 import type { ToolType } from '@/types/template'
 import { cn } from '@/lib/utils'
@@ -45,6 +46,12 @@ const shapeItems: { key: ToolType; label: string; Icon: typeof Square }[] = [
 /** 固定按钮：直接触发 add */
 const fixedItems: { key: ToolType; label: string; Icon: typeof Type; hint?: string }[] = [
   { key: 'text', label: '文本', Icon: Type },
+  {
+    key: 'date',
+    label: '日期',
+    Icon: CalendarDays,
+    hint: '插入日期（双击选日期；属性面板可设格式与关联公式，如保质期=生产日期+6个月）',
+  },
   {
     key: 'text-paragraph',
     label: '段落',

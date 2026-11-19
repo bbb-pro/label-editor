@@ -46,11 +46,13 @@ import {
   Minus as MinusGlyph,
   Plus as PlusGlyph,
   FileUp,
+  CalendarDays,
 } from 'lucide-react'
 import type { PaperSize, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import type { ActiveObject, DataRow, ElementKind, TextStyle, TextFormatSnapshot, SerialSpec, BarcodeAlign } from '@/types/editor'
 import type { TableSpec } from '@/lib/table'
+import { DATE_PRESETS, formatDate, parseDateValue, type DateSpec } from '@/lib/dateSpec'
 import { BARCODE_OPTIONS, is2dType, isQrFamily, type BarcodeType, type BarcodeRenderSettings } from '@/lib/barcode'
 import { FONT_FAMILIES, CJK_FONT } from '@/lib/textStyles'
 import { isUserFontFamily, subscribeUserFonts, getUserFontsSnapshot } from '@/lib/userFonts'
@@ -110,6 +112,12 @@ interface PropertyPanelProps {
   onOpenTableEditor: (tab?: 'content' | 'size') => void
   /** 文本：打开「本机字体」对话框（上传 .ttf，画布与导出 PDF 用同一份字形） */
   onOpenFontManager: () => void
+  /** 日期：改格式 / 日期值 / 关联公式 */
+  onDateSpecChange: (patch: Partial<DateSpec>) => void
+  /** 日期：打开日历对话框选日期 */
+  onOpenDatePicker: () => void
+  /** 可作为公式来源的其它日期对象（id + 显示名），排除自己 */
+  dateObjects: { id: string; name: string }[]
   objectCount: number
   /** 仅内容模式：供移动端底部抽屉复用（自行包裹滚动） */
   bare?: boolean
@@ -259,6 +267,9 @@ export default function PropertyPanel(props: PropertyPanelProps) {
           onTableColDelta={props.onTableColDelta}
           onOpenTableEditor={props.onOpenTableEditor}
           onOpenFontManager={props.onOpenFontManager}
+          onDateSpecChange={props.onDateSpecChange}
+          dateObjects={props.dateObjects}
+          onOpenDatePicker={props.onOpenDatePicker}
         />
       ) : (
         <EmptySelection objectCount={props.objectCount} />
@@ -479,6 +490,175 @@ function TextFormatSection({
 }
 
 
+/**
+ * 日期设置区：格式预设 / 自定义样式串 / 双击选日期 / 关联公式。
+ * 日期对象固定日期，不参与 Excel 数据列绑定；关联公式引用的是其它日期对象的 id。
+ */
+function DateSection({
+  spec,
+  dateObjects,
+  onChange,
+  onPickDate,
+}: {
+  spec: DateSpec
+  /** 可作公式来源的其它日期对象 */
+  dateObjects: { id: string; name: string }[]
+  onChange: (patch: Partial<DateSpec>) => void
+  /** 打开日历对话框选日期 */
+  onPickDate: () => void
+}) {
+  const f = spec.formula
+  const preview = (() => {
+    const d = parseDateValue(spec.value)
+    return d ? formatDate(d, spec.pattern) : '—'
+  })()
+  const preset = DATE_PRESETS.find((p) => p.pattern === spec.pattern)?.pattern ?? '__custom'
+  return (
+    <Section title="日期设置">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between rounded-md border bg-muted/40 px-2.5 py-1.5">
+          <span className="text-[11px] text-muted-foreground">当前显示</span>
+          <span className="font-mono text-xs font-medium">{preview || '—'}</span>
+        </div>
+        <Button variant="outline" size="sm" className="h-8 w-full text-xs" onClick={onPickDate}>
+          <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
+          选择日期（也可双击画布上的日期）
+        </Button>
+
+        {/* 格式：预设下拉 + 自定义样式串 */}
+        <div className="space-y-1">
+          <span className="text-[11px] text-muted-foreground">日期格式</span>
+          <Select
+            value={preset}
+            onValueChange={(v) => {
+              if (v !== '__custom') onChange({ pattern: v })
+            }}
+          >
+            <SelectTrigger className="h-8 w-full text-xs">
+              <SelectValue placeholder="选择格式" />
+            </SelectTrigger>
+            <SelectContent>
+              {DATE_PRESETS.map((p) => (
+                <SelectItem key={p.pattern} value={p.pattern} className="text-xs">
+                  {p.label}
+                </SelectItem>
+              ))}
+              <SelectItem value="__custom" className="text-xs">
+                自定义（下方样式串）
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <input
+            key={`pattern-${spec.pattern}`}
+            defaultValue={spec.pattern}
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v) onChange({ pattern: v })
+            }}
+            aria-label="日期样式串"
+            placeholder="yyyy.MM.dd"
+            className="h-8 w-full rounded-md border bg-background px-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring/40"
+          />
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            样式串写法：yyyy/YYYY 四位年、yy/YY 两位年、MM 两位月、M 一位月、dd/DD 两位日、d/D 一位日、dddd/DDDD 星期。例：
+            <code className="mx-0.5 rounded bg-muted px-1">yyyy年M月d日</code>
+          </p>
+        </div>
+
+        {/* 关联公式 */}
+        <div className="space-y-1.5 border-t pt-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium">关联公式</span>
+            <Switch
+              checked={!!f}
+              onCheckedChange={(on) =>
+                onChange({
+                  formula: on
+                    ? {
+                        source: dateObjects[0]?.id ?? '',
+                        op: 'add',
+                        amount: 6,
+                        unit: 'month',
+                      }
+                    : undefined,
+                })
+              }
+            />
+          </div>
+          {f ? (
+            <>
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                本对象日期 = 来源日期 ± 数值（单位）。来源变化后本对象自动跟着变。
+              </p>
+              <Select
+                value={f.source || '__none'}
+                onValueChange={(v) => onChange({ formula: { ...f, source: v } })}
+              >
+                <SelectTrigger className="h-8 w-full text-xs">
+                  <SelectValue placeholder="选择来源日期对象" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none" className="text-xs">
+                    （未选择来源）
+                  </SelectItem>
+                  {dateObjects.map((o) => (
+                    <SelectItem key={o.id} value={o.id} className="text-xs">
+                      {o.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="grid grid-cols-2 gap-2">
+                <Select
+                  value={f.op}
+                  onValueChange={(v) => onChange({ formula: { ...f, op: v as 'add' | 'sub' } })}
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="add" className="text-xs">加（之后）</SelectItem>
+                    <SelectItem value="sub" className="text-xs">减（之前）</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={f.unit}
+                  onValueChange={(v) =>
+                    onChange({ formula: { ...f, unit: v as 'day' | 'month' | 'year' } })
+                  }
+                >
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="day" className="text-xs">天</SelectItem>
+                    <SelectItem value="month" className="text-xs">月</SelectItem>
+                    <SelectItem value="year" className="text-xs">年</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <MmField
+                label="数值"
+                value={f.amount}
+                suffix=""
+                step={1}
+                onChange={(v) => onChange({ formula: { ...f, amount: Math.max(0, Math.round(v)) } })}
+              />
+              <p className="text-[10px] leading-relaxed text-amber-700">
+                ⚠️ 月末自动取当月最后一天：如 8月31日 + 6个月 = 次年2月28日。
+              </p>
+            </>
+          ) : (
+            <p className="text-[10px] leading-relaxed text-muted-foreground">
+              开启后可设「保质期 = 生产日期 + 6 个月」这类关联，来源变化自动更新。
+            </p>
+          )}
+        </div>
+      </div>
+    </Section>
+  )
+}
+
 function SelectedObjectPanel({
   active,
   usedVariables,
@@ -507,6 +687,9 @@ function SelectedObjectPanel({
   onTableColDelta,
   onOpenTableEditor,
   onOpenFontManager,
+  onDateSpecChange,
+  dateObjects,
+  onOpenDatePicker,
 }: Omit<
   PropertyPanelProps,
   'active' | 'paper' | 'onPaperChange' | 'paperColor' | 'onPaperColorChange' | 'objectCount' | 'currentRow'
@@ -524,7 +707,9 @@ function SelectedObjectPanel({
   const table = active.table
   const tableRows = table?.rows.length ?? 0
   const tableCols = table?.rows[0]?.length ?? 0
-  const canEditContent = isText || isBarcode
+  const isDate = isText && !!active.dateSpec
+  // 日期对象的内容由日历/公式决定，不显示普通文本输入框
+  const canEditContent = (isText && !isDate) || isBarcode
   // 选中对象头部显示用：kind==='shape' 时展示具体形状（椭圆/三角…）
   const HeaderShapeIcon = active.kind === 'shape' ? (SHAPE_META[active.shapeType ?? 'ellipse'].Icon) : meta.Icon
   const headerLabel =
@@ -824,6 +1009,15 @@ function SelectedObjectPanel({
           onChange={onTextStyleChange}
           onRegionChange={onTextRegionChange}
           onOpenFontManager={onOpenFontManager}
+        />
+      )}
+
+      {isDate && active.dateSpec && (
+        <DateSection
+          spec={active.dateSpec}
+          dateObjects={dateObjects}
+          onChange={onDateSpecChange}
+          onPickDate={onOpenDatePicker}
         />
       )}
 

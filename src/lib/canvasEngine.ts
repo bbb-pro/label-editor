@@ -20,6 +20,14 @@ import {
 import type { PaperArea, PaperSize, DataRow, ElementKind, ShapeType } from '@/types/template'
 import { DEFAULT_PAPER } from '@/types/template'
 import { resolveContent } from '@/lib/content'
+import {
+  formatDate,
+  parseDateValue,
+  resolveDates,
+  todayValue,
+  type DateSpec,
+  type DateEntry,
+} from '@/lib/dateSpec'
 import type { ActiveObject, TextFormatSnapshot, TextStyle, BarcodeAlign } from '@/types/editor'
 import type { SerialSpec } from '@/types/editor'
 import type { TemplateSpec, TplBarcodeNode } from '@/lib/templateLibrary'
@@ -79,6 +87,8 @@ export interface ControllerEvents {
   onDirty(): void
   /** 撤销/重做栈变化时通知（供 UI 更新按钮可用态） */
   onHistoryChange?(): void
+  /** 双击日期对象 → 弹日历对话框（传对象 id；日期对象用 fabric.Text，不进文本编辑） */
+  onEditDate?(objId: string): void
 }
 
 /** fabric 对象之外的自定义字段（不通过 extends 继承避免泛型 set 冲突） */
@@ -146,6 +156,11 @@ interface CustomFields {
   _suffix?: string
   /** 内容对象：序列化配置（批量打印时 {{seq}} 逐张递增） */
   _serial?: SerialSpec
+  /**
+   * 日期对象（kind='text' 的特殊形态）：格式样式串 + 日期值 + 关联公式。
+   * 用普通 fabric.Text 承载，双击不进文本编辑而是弹日历；显示文案由 resolveDates 算出。
+   */
+  _dateSpec?: DateSpec
   /** SVG 素材：viewBox，如 "0 0 24 24" 或 "0 0 36 36" */
   _svgViewBox?: string
   /** SVG 素材：内部片段（不含外层 <svg>），与 viewBox 一起可在导出时重绘为矢量 */
@@ -162,6 +177,8 @@ interface CustomFields {
 
 const isBarcodeKind = (k: ElementKind | undefined): boolean => k === 'barcode'
 const isContentKind = (k: ElementKind | undefined): boolean => k === 'text' || k === 'barcode'
+/** 日期对象是 kind='text' 的特例：挂了 _dateSpec */
+const isDateObject = (o: fabric.Object | undefined): boolean => !!o && !!cf(o)._dateSpec
 /** 是否有描边粗细（闭合形状 + 直线） */
 const isStrokeKind = (k: ElementKind | undefined): boolean => k === 'rect' || k === 'shape' || k === 'line'
 
@@ -430,6 +447,8 @@ export class CanvasController {
   dataRows: DataRow[] = []
   /** 批量打印当前副本的序列号显示值；null 表示用示例值预览 */
   seqValue: string | null = null
+  /** 日期对象显示值缓存：key=对象 id（公式引用用 id，重命名不断链），value=格式化后的文案 */
+  private _dateDisplay = new Map<string, string>()
   /**
    * 批量打印当前页码(0 起)；null = 设计态。
    * 有值时每个序列化对象按**自己的** start/step/minDigits 计算序号，
@@ -512,6 +531,11 @@ export class CanvasController {
     // 双击编组 → 解组（编辑体验贴近 PS/AI）；条码组 / 素材组是原子对象，不解组
     this.canvas.on('mouse:dblclick', (opt) => {
       const t = opt.target
+      // 日期对象用 fabric.Text（非 IText）：fabric 不会自动进文本编辑，双击完全交给我们弹日历
+      if (isDateObject(t ?? undefined)) {
+        this.events.onEditDate?.(cf(t!).id ?? '')
+        return
+      }
       if (t && this.isGroup(t) && !isAtomicGroupKind(cf(t).kind)) this.ungroupSelection()
     })
     this.canvas.on('object:moving', (e) => {
@@ -1138,8 +1162,19 @@ export class CanvasController {
     return true
   }
 
+  /** 重建日期对象显示值（公式链求值）；必须在内容刷新前调用 */
+  private rebuildDateDisplay() {
+    const entries: DateEntry[] = []
+    this.flattenTopLevel().forEach((o) => {
+      const c = cf(o)
+      if (c._dateSpec && c.id) entries.push({ name: c.id, spec: c._dateSpec })
+    })
+    this._dateDisplay = resolveDates(entries)
+  }
+
   /** 刷新画布上所有内容对象（递归含组内），用于变量/序列号切换后重绘 */
   refreshAllContent() {
+    this.rebuildDateDisplay()
     const objs = this.flattenTopLevel()
     // ⚠️ 原实现逐对象调用 displayContent → 每次都全量 buildContentMap（遍历全部对象），
     // 整体退化为 O(n²)。这里按「纸张」预构建一次 contentMap 供同纸对象复用。
@@ -1303,6 +1338,7 @@ export class CanvasController {
       shapeType,
       textFormat,
       textRegion,
+      dateSpec: kind === 'text' ? c._dateSpec : undefined,
       isParagraph: kind === 'text' ? !!c._textParagraph : undefined,
       table,
     })
@@ -2149,6 +2185,59 @@ export class CanvasController {
       splitByGrapheme: true,
     })
     this.finalizeObject(obj, 'text', initial)
+  }
+
+  /**
+   * 插入日期对象：本质是 fabric.Text（不是 Textbox / IText），双击不会进文本编辑，
+   * 由画布 mouse:dblclick 接管弹日历。显示文案由 _dateSpec + 公式链求值得到。
+   */
+  addDate() {
+    const spec: DateSpec = { pattern: 'yyyy-MM-dd', value: todayValue() }
+    const text = formatDate(parseDateValue(spec.value)!, spec.pattern)
+    const cx = this.paperCenter().x
+    const cy = this.paperCenter().y
+    const obj = new fabric.Text(text, {
+      left: cx - mmToPx(18),
+      top: cy - mmToPx(3),
+      fontFamily: CJK_FONT, // 中文样式串（如「2026年3月14日」）也能显示，统一用黑体保证导出保真
+      fontSize: 22,
+      fill: '#000000',
+      originX: 'left',
+      originY: 'top',
+    })
+    const c = cf(obj)
+    c._dateSpec = spec
+    this.finalizeObject(obj, 'text', spec.value)
+  }
+
+  /** 改日期对象的格式/日期值/公式；patch 部分覆盖 */
+  updateDateSpec(obj: fabric.Object, patch: Partial<DateSpec>) {
+    const c = cf(obj)
+    if (!c._dateSpec) return
+    c._dateSpec = { ...c._dateSpec, ...patch }
+    this.refreshAllContent()
+    this.emitActive(obj)
+    this.events.onDirty()
+  }
+
+  /** 按 id 改日期对象（供属性面板用 id 定位，避免持有 fabric 对象引用） */
+  updateDateSpecById(id: string, patch: Partial<DateSpec>) {
+    const obj = this.flattenTopLevel().find((o) => cf(o).id === id)
+    if (obj && cf(obj)._dateSpec) this.updateDateSpec(obj, patch)
+  }
+
+  /** 列出所有日期对象（id + 名称），供公式来源下拉使用 */
+  listDateObjects(): { id: string; name: string }[] {
+    return this.flattenTopLevel()
+      .filter((o) => !!cf(o)._dateSpec)
+      .map((o) => ({ id: cf(o).id ?? '', name: cf(o)._name || '未命名日期' }))
+      .filter((x) => !!x.id)
+  }
+
+  /** 取某日期对象当前选中的日期值（YYYY-MM-DD），供日历对话框回显 */
+  dateValueOf(id: string): string | null {
+    const obj = this.flattenTopLevel().find((o) => cf(o).id === id)
+    return obj ? (cf(obj)._dateSpec?.value ?? null) : null
   }
 
   addRect() {
@@ -3039,6 +3128,11 @@ export class CanvasController {
 
   /** 对象的“设计原文”，已处理「名称=表头」的列绑定（无需在内容里写 {{}}）。 */
   private rawDesign(c: ReturnType<typeof cf>): string {
+    // 日期对象：显示值来自 _dateDisplay（公式链求值结果），不走数据列绑定（固定日期）。
+    if (c._dateSpec) {
+      const value = (c.id && this._dateDisplay.get(c.id)) || ''
+      return (c._prefix ?? '') + value + (c._suffix ?? '')
+    }
     const h = this.bindingHeader(c)
     if (h) {
       // 绑定列：设计态显示列名（直观体现“名称=表头”的对应），预览/打印时显示该列具体数据
@@ -3384,6 +3478,7 @@ export class CanvasController {
         props.originalText = c.originalText
         if (c._textParagraph) props._textParagraph = true
         if (c._letterSpacingPt) props._letterSpacingPt = c._letterSpacingPt
+        if (c._dateSpec) props._dateSpec = c._dateSpec
       }
       if (c.kind === 'shape') props._shapeType = c._shapeType ?? 'ellipse'
       if (c.kind === 'table') {
@@ -3684,6 +3779,7 @@ export class CanvasController {
     if (c.kind === 'text') {
       c._textParagraph = !!s._textParagraph
       if (typeof s._letterSpacingPt === 'number') c._letterSpacingPt = s._letterSpacingPt
+      if (s._dateSpec && typeof s._dateSpec === 'object') c._dateSpec = s._dateSpec as DateSpec
       // 字体归一：老模板 / 老标签里可能存着已下架的字体名（宋体 / 微软雅黑 / Verdana…）。
       // 不归一的话，画布按旧字体渲染（本机装了就显示、没装就回退系统字体），
       // 而导出 PDF 时它必然被换成别的字体 →「打开看到的」与「导出的」不一致。
