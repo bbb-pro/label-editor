@@ -36,12 +36,21 @@ export const DATE_PRESETS: { label: string; pattern: string }[] = [
   { label: '14/03/2001', pattern: 'dd/MM/yyyy' },
   { label: '2001年3月14日', pattern: 'yyyy年M月d日' },
   { label: '2001年3月14日 星期三', pattern: 'yyyy年M月d日 dddd' },
+  { label: '14 Aug 2026', pattern: 'dd MMM yyyy' },
+  { label: '14 August 2026', pattern: 'dd MMMM yyyy' },
+  { label: 'Aug 14, 2026', pattern: 'MMM d, yyyy' },
 ]
 
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六']
+/** 英文月份缩写 / 全称，供 MMM / MMMM token 使用 */
+const MONTHS_EN_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const MONTHS_EN_FULL = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
 
-/** 同时支持 yyyy/YYYY 与 dd/DD 两套写法；长 token 必须先匹配 */
-const TOKEN_RE = /yyyy|YYYY|yy|YY|dddd|DDDD|dd|DD|d|D|MM|M/g
+/** 同时支持 yyyy/YYYY 与 dd/DD 两套写法；长 token 必须先匹配（MMMM > MMM > MM > M） */
+const TOKEN_RE = /yyyy|YYYY|yy|YY|dddd|DDDD|MMMM|mmmm|MMM|mmm|dd|DD|d|D|MM|M/g
 
 function pad2(n: number): string {
   return n < 10 ? `0${n}` : String(n)
@@ -69,6 +78,12 @@ export function formatDate(date: Date, pattern: string): string {
       case 'd':
       case 'D':
         return String(d)
+      case 'MMMM':
+      case 'mmmm':
+        return MONTHS_EN_FULL[m - 1]
+      case 'MMM':
+      case 'mmm':
+        return MONTHS_EN_SHORT[m - 1]
       case 'MM':
         return pad2(m)
       case 'M':
