@@ -4499,6 +4499,10 @@ export class CanvasController {
       const c = { ...src } as Record<string, unknown>
       delete c.id
       delete c._name // 名称不复制，避免撞名（会让新对象拿到默认名）
+      // ⭐ 日期对象显示值靠 id 从 _dateDisplay 取（见 rebuildDateDisplay / rawDesign），
+      //    不能像普通对象那样无 id：删旧 id 后必须分配全新 id，否则复制件显示为空。
+      //    也不能沿用原 id —— 会与原对象撞 key、让公式链错乱。
+      if (c._dateSpec && typeof c._dateSpec === 'object') c.id = newId()
       const l = typeof c.left === 'number' ? (c.left as number) : 0
       const t = typeof c.top === 'number' ? (c.top as number) : 0
       c.left = Math.min(this.workspaceW - 10, Math.max(0, l + offsetPx))
