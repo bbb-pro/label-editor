@@ -765,6 +765,14 @@ function SelectedObjectPanel({
         {canEditContent && (
           <NameField key={active.id ?? active.name} value={active.name} onChange={onNameChange} headers={headers} />
         )}
+        {isDate && (
+          <DateIdentityField
+            key={active.id}
+            id={active.id}
+            name={active.name}
+            onNameChange={onNameChange}
+          />
+        )}
       </Section>
 
       <Section title="位置与尺寸">
@@ -1187,6 +1195,46 @@ function NameField({
             <code className="rounded bg-muted px-1">{"{{商品名}}"}</code>。
           </>
         )}
+      </p>
+    </div>
+  )
+}
+
+/** 日期对象标识：可改名（默认「日期1 / 日期2…」，与文本区分）+ 只读内部 ID（公式来源按此引用）。
+ *  名称草稿与 NameField 同款「key 重挂载」策略，避开 eslint 禁止的 effect 内 setState。 */
+function DateIdentityField({
+  id,
+  name,
+  onNameChange,
+}: {
+  id: string
+  name: string
+  onNameChange: (name: string) => void
+}) {
+  const [text, setText] = useState(name)
+  return (
+    <div className="space-y-1.5 pt-2">
+      <label className="flex items-center gap-1.5">
+        <TagIcon className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-[11px] text-muted-foreground">名称</span>
+      </label>
+      <Input
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          onNameChange(e.target.value)
+        }}
+        placeholder="日期1"
+        className="h-8 text-xs"
+      />
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[11px] text-muted-foreground">ID</span>
+        <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-1 font-mono text-[10px]" title={id}>
+          {id}
+        </code>
+      </div>
+      <p className="text-[10px] leading-relaxed text-muted-foreground">
+        默认名「日期1 / 日期2…」便于与文本区分；ID 用于关联公式来源，重命名不会断链。
       </p>
     </div>
   )

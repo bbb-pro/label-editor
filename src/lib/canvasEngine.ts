@@ -1162,6 +1162,26 @@ export class CanvasController {
     return true
   }
 
+  /**
+   * 日期命名迁移：老存档/模板里的日期对象沿用了文本默认名「文本N」（或空名），
+   * 统一改成「日期1 / 日期2 …」以便与文本区分。必须在 restoreRecursive 之后调用
+   * ——此时所有对象的 _name 已还原，nextDateName 才能正确避开已占用的编号。
+   * 只改「看起来像自动生成」的名字，用户主动重命名过的日期一律保留。
+   */
+  private migrateDateNames() {
+    const dates = this.flattenTopLevel().filter((o) => !!cf(o)._dateSpec)
+    if (dates.length === 0) return
+    let changed = false
+    for (const o of dates) {
+      const nm = cf(o)._name
+      if (!nm || /^文本\d+$/.test(nm)) {
+        cf(o)._name = this.nextDateName(o)
+        changed = true
+      }
+    }
+    if (changed) this.canvas.requestRenderAll()
+  }
+
   /** 重建日期对象显示值（公式链求值）；必须在内容刷新前调用 */
   private rebuildDateDisplay() {
     const entries: DateEntry[] = []
@@ -2167,6 +2187,23 @@ export class CanvasController {
     return name
   }
 
+  /**
+   * 日期对象命名：日期1 / 日期2 …
+   * 用「首个空位」而非全局计数器 —— 载入模板/撤销重做后仍是从 1 起的连续编号；
+   * 且与文本「文本N」前缀不同，属性面板与公式来源下拉一眼即可区分。
+   */
+  private nextDateName(self?: fabric.Object): string {
+    const used = new Set<string>()
+    for (const o of this.flattenTopLevel()) {
+      if (o === self) continue
+      const nm = cf(o)._name
+      if (nm) used.add(nm)
+    }
+    let i = 1
+    while (used.has(`日期${i}`)) i++
+    return `日期${i}`
+  }
+
   addText(initial = '文本') {
     const boxW = mmToPx(40)
     const cx = this.paperCenter().x
@@ -2207,6 +2244,8 @@ export class CanvasController {
     })
     const c = cf(obj)
     c._dateSpec = spec
+    // 日期专属命名：日期1 / 日期2 …（finalizeObject 只在无名称时才补默认名「文本N」）
+    c._name = this.nextDateName()
     this.finalizeObject(obj, 'text', spec.value)
   }
 
@@ -3871,6 +3910,8 @@ export class CanvasController {
         }
       }
       this.restoreRecursive(objs, srcObjs)
+      // 老存档里的日期对象沿用「文本N」，迁移为「日期N」（全部名称已还原，此处编号才不会撞）
+      this.migrateDateNames()
       // 矢量条码组：JSON 里不含模块矩形，按元数据重建几何；
       // 旧模板的位图 Image 条码原样保留（兼容）。
       for (let i = 0; i < objs.length; i++) {
