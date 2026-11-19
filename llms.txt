@@ -1,0 +1,48 @@
+# 标签编辑器 Label Editor
+
+> 浏览器内运行的矢量条码标签设计与打印工具：42 种条码与二维码、任意毫米尺寸纸张、Excel 批量套打，导出矢量 PDF 与 384 DPI PNG，全程本地运算，无需注册。
+
+本文件是子站 `https://057300.xyz/label-editor/` 的**页面级补充**。站点级概览（四款工具的定位、作者与联系方式）在根目录
+[`https://057300.xyz/llms.txt`](https://057300.xyz/llms.txt)；机器可读摘要与问答见
+[`/ai/summary.json`](https://057300.xyz/ai/summary.json)、[`/ai/faq.json`](https://057300.xyz/ai/faq.json)、
+[`/ai/service.json`](https://057300.xyz/ai/service.json)。作者与站点背景见 [`/about/`](https://057300.xyz/about/)。
+
+## 这是什么
+
+- **定位**：做「一张能印刷、能扫」的标签 —— 快递面单、仓储货架标签、产品铭牌、资产标签、价签。
+- **形态**：纯前端单页应用（React + Canvas），打开即用，无账号、无后端、无上传。
+- **输出**：矢量 PDF（文字与条码可缩放、可选中搜索）、约 384 DPI PNG、浏览器打印（同一条矢量管线）。
+- **中文场景**：界面与帮助为中文，内置 GB/T 191 储运图示标志与常用合规标志素材。
+
+## 页面
+
+- [标签编辑器](https://057300.xyz/label-editor/)：编辑器本体，画布 + 属性面板 + 模板库（306 个标签模板）。
+- [使用指南](https://057300.xyz/label-editor/guide/)：从空白到打印的 6 步，含纸张、码制、排版、批量、导出。
+- [42 种码制怎么选](https://057300.xyz/label-editor/guide/barcode-types.html)：Code128 / Code39 / EAN-13 / GS1-128 / QR / DataMatrix 的选型对照。
+- [标签尺寸速查](https://057300.xyz/label-editor/guide/label-sizes.html)：快递面单、货架、产品、资产标签的常用毫米规格。
+- [Excel 批量套打](https://057300.xyz/label-editor/guide/batch-print.html)：表头绑定、`{{列名}}` 行内混排、流水号序列化。
+
+## 能力与规格
+
+- **码制**：42 种。一维 Code128 / GS1-128 / Code39 / Code93 / Code11 / Codabar / EAN-13 / EAN-8 / UPC-A / UPC-E / ITF-14 / MSI / Pharmacode 与 2/5 家族；二维 QR / Micro QR / DataMatrix / PDF417 / Aztec / MaxiCode / DotCode / 汉信码等。
+- **纸张**：任意毫米尺寸，非固定规格；一份文件可放多张不同尺寸的纸，页序支持按套或按标签排序。
+- **数据**：导入 Excel / CSV；文本框名称与表头同名即整框绑定该列，或用 `{{列名}}` 行内混排。
+- **导出**：PDF 为矢量绘制（字体子集嵌入，中文不缺字）；PNG 为矢量按倍率重绘，默认约 384 DPI。
+- **模板**：内置 306 个模板 / 22 个分类，可另存为 JSON 复用，含纸张尺寸与数据绑定关系。
+
+## 边界与限制
+
+- 纯前端应用，页面主体内容由 JavaScript 渲染；不提供 Markdown 内容协商，也不支持服务端渲染。
+- 表格对象不参与 `{{字段}}` 批量替换；表格与部分素材不支持旋转后导出。
+- 不收集、不上传设计与表格文件；无用户账号体系，数据只存在浏览器本地。
+
+## 引用与出处
+
+- 作者：星辰月光酿大树（独立开发者），[关于作者与本站](https://057300.xyz/about/)。
+- 更新时间：2026-10-29。站点级更新流：[Atom](https://057300.xyz/atom.xml)。
+- 站内其他工具：[刀模设计](https://057300.xyz/diecut/) · [装柜大师](https://057300.xyz/loader-master/) · [Markdown 编辑器](https://057300.xyz/lite_MD_editor/)。
+
+## Optional
+
+- [站点级 llms.txt](https://057300.xyz/llms.txt)：四款工具的统一说明。
+- [站点地图](https://057300.xyz/label-editor/sitemap.xml)：本子站全部页面。
